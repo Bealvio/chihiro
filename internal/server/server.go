@@ -238,30 +238,29 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		return
 	}
 
-	// Check if user has permission to create clusters
-	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
-	if len(creatorGroups) == 0 {
-		// Fallback to admin groups if creator groups not configured
-		creatorGroups = viper.GetStringSlice("cluster.admin_groups")
-		if len(creatorGroups) == 0 {
-			creatorGroups = []string{"cluster-admin"}
-		}
-	}
-
-	canCreate := auth.CheckUserGroups(user.Groups, creatorGroups)
-	if !canCreate {
-		slog.Warn("User attempted to create cluster without permission", "username", user.Username, "user_groups", user.Groups, "required_groups", creatorGroups)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to create clusters. Required groups: " + strings.Join(creatorGroups, ", ")})
-		return
-	}
-
-	// Check if user is admin (for additional privileges)
+	// Check if user is admin (admins can always create)
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
 	if len(adminGroups) == 0 {
 		adminGroups = []string{"cluster-admin"}
 	}
 
 	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
+
+	// Check if user has permission to create clusters
+	if !isAdmin {
+		creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+		if len(creatorGroups) == 0 {
+			// Fallback to admin groups if creator groups not configured
+			creatorGroups = adminGroups
+		}
+
+		canCreate := auth.CheckUserGroups(user.Groups, creatorGroups)
+		if !canCreate {
+			slog.Warn("User attempted to create cluster without permission", "username", user.Username, "user_groups", user.Groups, "required_groups", creatorGroups)
+			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to create clusters. Required groups: " + strings.Join(creatorGroups, ", ")})
+			return
+		}
+	}
 
 	// Validate groups unless user is admin
 	if req.Groups != "" {
@@ -510,21 +509,23 @@ func (s *Server) handleGetUserPermissions(c *gin.Context) {
 		return
 	}
 
-	// Check if user can create clusters
-	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
-	if len(creatorGroups) == 0 {
-		// Fallback to admin groups if creator groups not configured
-		creatorGroups = viper.GetStringSlice("cluster.admin_groups")
-		if len(creatorGroups) == 0 {
-			creatorGroups = []string{"cluster-admin"}
-		}
-	}
-
-	canCreate := auth.CheckUserGroups(user.Groups, creatorGroups)
-
 	// Check if user is admin
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	if len(adminGroups) == 0 {
+		adminGroups = []string{"cluster-admin"}
+	}
 	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
+
+	// Check if user can create clusters (admins can always create)
+	canCreate := isAdmin
+	if !canCreate {
+		creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+		if len(creatorGroups) == 0 {
+			// Fallback to admin groups if creator groups not configured
+			creatorGroups = adminGroups
+		}
+		canCreate = auth.CheckUserGroups(user.Groups, creatorGroups)
+	}
 
 	slog.Debug("Returning user permissions", "username", user.Username, "can_create", canCreate, "is_admin", isAdmin)
 
