@@ -96,6 +96,7 @@ func (s *Server) setupRoutes() {
 	protected.GET("/api/ip-ranges/next", s.handleNextIPRange)
 	protected.GET("/api/versions", s.handleGetVersions)
 	protected.GET("/api/user/groups", s.handleGetUserGroups)
+	protected.GET("/api/user/permissions", s.handleGetUserPermissions)
 	protected.GET("/api/limits", s.handleGetLimits)
 	protected.GET("/ws", s.handleWebSocket)
 }
@@ -237,24 +238,30 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		return
 	}
 
-	// Check if user is admin
+	// Check if user has permission to create clusters
+	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+	if len(creatorGroups) == 0 {
+		// Fallback to admin groups if creator groups not configured
+		creatorGroups = viper.GetStringSlice("cluster.admin_groups")
+		if len(creatorGroups) == 0 {
+			creatorGroups = []string{"cluster-admin"}
+		}
+	}
+
+	canCreate := auth.CheckUserGroups(user.Groups, creatorGroups)
+	if !canCreate {
+		slog.Warn("User attempted to create cluster without permission", "username", user.Username, "user_groups", user.Groups, "required_groups", creatorGroups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to create clusters. Required groups: " + strings.Join(creatorGroups, ", ")})
+		return
+	}
+
+	// Check if user is admin (for additional privileges)
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
 	if len(adminGroups) == 0 {
 		adminGroups = []string{"cluster-admin"}
 	}
 
-	isAdmin := false
-	for _, adminGroup := range adminGroups {
-		for _, userGroup := range user.Groups {
-			if userGroup == adminGroup {
-				isAdmin = true
-				break
-			}
-		}
-		if isAdmin {
-			break
-		}
-	}
+	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
 
 	// Validate groups unless user is admin
 	if req.Groups != "" {
@@ -292,6 +299,9 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		slog.Info("Creating cluster with default groups", "username", user.Username, "cluster_name", req.Name, "is_admin", isAdmin)
 	}
 
+	// Set creator information
+	req.Creator = user.Username
+
 	if err := s.manager.CreateCluster(c.Request.Context(), req); err != nil {
 		slog.Error("Failed to create cluster", "username", user.Username, "cluster_name", req.Name, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -327,17 +337,24 @@ func (s *Server) handleDeleteCluster(c *gin.Context) {
 
 	// Check if user has access to this cluster
 	clusters := s.watcher.GetClustersForUser(user.Groups)
-	canDelete := false
+	var targetCluster *watcher.ClusterInfo
 	for _, cluster := range clusters {
 		if cluster.Name == name && cluster.Namespace == namespace {
-			canDelete = true
+			targetCluster = cluster
 			break
 		}
 	}
 
-	if !canDelete {
+	if targetCluster == nil {
 		slog.Warn("User attempted to delete cluster without access", "username", user.Username, "cluster_name", name, "namespace", namespace, "user_groups", user.Groups)
 		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: You don't have access to this cluster"})
+		return
+	}
+
+	// Check if user can modify this cluster
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to delete cluster without modify permission", "username", user.Username, "cluster_name", name, "namespace", namespace, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: You don't have permission to delete this cluster"})
 		return
 	}
 
@@ -485,6 +502,38 @@ func (s *Server) handleGetUserGroups(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleGetUserPermissions(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		slog.Warn("Unauthorized access to user permissions", "remote_addr", c.ClientIP())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Check if user can create clusters
+	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+	if len(creatorGroups) == 0 {
+		// Fallback to admin groups if creator groups not configured
+		creatorGroups = viper.GetStringSlice("cluster.admin_groups")
+		if len(creatorGroups) == 0 {
+			creatorGroups = []string{"cluster-admin"}
+		}
+	}
+
+	canCreate := auth.CheckUserGroups(user.Groups, creatorGroups)
+
+	// Check if user is admin
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
+
+	slog.Debug("Returning user permissions", "username", user.Username, "can_create", canCreate, "is_admin", isAdmin)
+
+	c.JSON(http.StatusOK, gin.H{
+		"canCreate": canCreate,
+		"isAdmin":   isAdmin,
+	})
+}
+
 func (s *Server) handleGetLimits(c *gin.Context) {
 	user, ok := auth.GetUserFromContext(c.Request.Context())
 	if !ok {
@@ -498,7 +547,7 @@ func (s *Server) handleGetLimits(c *gin.Context) {
 	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
 
 	// Get current cluster count and total nodes
-	clusters := s.watcher.GetClustersForUser([]string{}) // Get all clusters to count
+	clusters := s.watcher.GetClusters() // Get all Chihiro-managed clusters to count
 	currentClusters := len(clusters)
 	currentTotalNodes := int32(0)
 
@@ -529,7 +578,8 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	namespace := c.DefaultQuery("namespace", "capi-system")
 
 	var req struct {
-		Groups string `json:"groups"`
+		Groups    string `json:"groups"`
+		Namespace string `json:"namespace"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -538,24 +588,36 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 		return
 	}
 
-	// Check if user is admin
-	adminGroups := viper.GetStringSlice("cluster.admin_groups")
-	if len(adminGroups) == 0 {
-		adminGroups = []string{"cluster-admin"}
+	// Use namespace from request body if provided
+	if req.Namespace != "" {
+		namespace = req.Namespace
 	}
 
-	isAdmin := false
-	for _, adminGroup := range adminGroups {
-		for _, userGroup := range user.Groups {
-			if userGroup == adminGroup {
-				isAdmin = true
-				break
-			}
-		}
-		if isAdmin {
+	// Check if user has permission to modify this cluster
+	clusters := s.watcher.GetClustersForUser(user.Groups)
+	var targetCluster *watcher.ClusterInfo
+	for _, cluster := range clusters {
+		if cluster.Name == clusterName && cluster.Namespace == namespace {
+			targetCluster = cluster
 			break
 		}
 	}
+
+	if targetCluster == nil {
+		slog.Warn("User attempted to modify cluster without access", "username", user.Username, "cluster", clusterName, "namespace", namespace, "user_groups", user.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to modify groups without permission", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to modify this cluster"})
+		return
+	}
+
+	// Check if user is admin for group validation
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
 
 	// Validate groups unless user is admin
 	if req.Groups != "" && !isAdmin {
@@ -594,7 +656,7 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	// Force immediate refresh and broadcast to all connected clients
 	s.watcher.RefreshAndBroadcast(c.Request.Context())
 
-	slog.Info("Cluster groups updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "groups", req.Groups, "is_admin", isAdmin)
+	slog.Info("Cluster groups updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "groups", req.Groups)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "updated",
@@ -631,26 +693,26 @@ func (s *Server) handleEditClusterNodes(c *gin.Context) {
 		return
 	}
 
-	// Check if user is admin
-	adminGroups := viper.GetStringSlice("cluster.admin_groups")
-	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
-
-	// Non-admin users need to have access to the cluster to modify it
-	if !isAdmin {
-		clusters := s.watcher.GetClustersForUser(user.Groups)
-		hasAccess := false
-		for _, cluster := range clusters {
-			if cluster.Name == clusterName {
-				hasAccess = true
-				break
-			}
+	// Check if user has permission to modify this cluster
+	clusters := s.watcher.GetClustersForUser(user.Groups)
+	var targetCluster *watcher.ClusterInfo
+	for _, cluster := range clusters {
+		if cluster.Name == clusterName && cluster.Namespace == namespace {
+			targetCluster = cluster
+			break
 		}
+	}
 
-		if !hasAccess {
-			slog.Warn("User attempted to modify node count for cluster without access", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups)
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return
-		}
+	if targetCluster == nil {
+		slog.Warn("User attempted to modify cluster without access", "username", user.Username, "cluster", clusterName, "namespace", namespace, "user_groups", user.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to modify node count without permission", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to modify this cluster"})
+		return
 	}
 
 	if err := s.manager.UpdateClusterNodeCount(c.Request.Context(), clusterName, namespace, req.Nodes); err != nil {
@@ -662,7 +724,7 @@ func (s *Server) handleEditClusterNodes(c *gin.Context) {
 	// Force immediate refresh and broadcast to all connected clients
 	s.watcher.RefreshAndBroadcast(c.Request.Context())
 
-	slog.Info("Cluster node count updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "nodes", req.Nodes, "is_admin", isAdmin)
+	slog.Info("Cluster node count updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "nodes", req.Nodes)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "updated",
@@ -699,26 +761,26 @@ func (s *Server) handleEditClusterVersion(c *gin.Context) {
 		return
 	}
 
-	// Check if user is admin
-	adminGroups := viper.GetStringSlice("cluster.admin_groups")
-	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
-
-	// Non-admin users need to have access to the cluster to modify it
-	if !isAdmin {
-		clusters := s.watcher.GetClustersForUser(user.Groups)
-		hasAccess := false
-		for _, cluster := range clusters {
-			if cluster.Name == clusterName {
-				hasAccess = true
-				break
-			}
+	// Check if user has permission to modify this cluster
+	clusters := s.watcher.GetClustersForUser(user.Groups)
+	var targetCluster *watcher.ClusterInfo
+	for _, cluster := range clusters {
+		if cluster.Name == clusterName && cluster.Namespace == namespace {
+			targetCluster = cluster
+			break
 		}
+	}
 
-		if !hasAccess {
-			slog.Warn("User attempted to modify version for cluster without access", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups)
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return
-		}
+	if targetCluster == nil {
+		slog.Warn("User attempted to modify cluster without access", "username", user.Username, "cluster", clusterName, "namespace", namespace, "user_groups", user.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to modify version without permission", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to modify this cluster"})
+		return
 	}
 
 	if err := s.manager.UpdateClusterVersion(c.Request.Context(), clusterName, namespace, req.Version); err != nil {
@@ -730,7 +792,7 @@ func (s *Server) handleEditClusterVersion(c *gin.Context) {
 	// Force immediate refresh and broadcast to all connected clients
 	s.watcher.RefreshAndBroadcast(c.Request.Context())
 
-	slog.Info("Cluster version updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "version", req.Version, "is_admin", isAdmin)
+	slog.Info("Cluster version updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "version", req.Version)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "updated",
@@ -745,6 +807,44 @@ func getUsernameOrAnon(user *auth.UserInfo) string {
 		return user.Username
 	}
 	return "anonymous"
+}
+
+// Helper function to check if user can modify a cluster
+func (s *Server) canUserModifyCluster(user *auth.UserInfo, cluster *watcher.ClusterInfo) bool {
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
+
+	if isAdmin {
+		return true
+	}
+
+	// User must be in creator groups to modify
+	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+	if len(creatorGroups) == 0 {
+		creatorGroups = adminGroups
+	}
+
+	isCreatorGroupMember := auth.CheckUserGroups(user.Groups, creatorGroups)
+	if !isCreatorGroupMember {
+		return false
+	}
+
+	// Check if user is the creator OR shares a group with the cluster
+	isCreator := cluster.Creator == user.Username
+	sharesGroup := false
+	for _, userGroup := range user.Groups {
+		for _, clusterGroup := range cluster.Groups {
+			if userGroup == clusterGroup {
+				sharesGroup = true
+				break
+			}
+		}
+		if sharesGroup {
+			break
+		}
+	}
+
+	return isCreator || sharesGroup
 }
 
 // parseGroupsString parses a comma-separated groups string into a slice

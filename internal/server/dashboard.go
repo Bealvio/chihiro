@@ -652,6 +652,7 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentUser = null;
         let userGroups = [];
         let isAdmin = false;
+        let canCreate = false;
         let deleteClusterData = null;
         let editClusterData = null;
 
@@ -660,6 +661,7 @@ const dashboardHTML = `<!DOCTYPE html>
             loadUserInfo().then(() => {
                 loadVersions();
                 loadUserGroups();
+                loadUserPermissions();
                 connectWebSocket();
                 loadClusters();
                 startAutoRefresh(); // Start periodic refresh as fallback
@@ -1137,6 +1139,36 @@ const dashboardHTML = `<!DOCTYPE html>
                     });
                 })
                 .catch(error => console.error('Error loading user groups:', error));
+        }
+
+        function loadUserPermissions() {
+            fetch('/api/user/permissions', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    canCreate = data.canCreate || false;
+                    console.log('User permissions loaded:', 'canCreate:', canCreate, 'isAdmin:', data.isAdmin);
+
+                    // Show or hide create button based on permissions
+                    updateCreateButtonVisibility();
+                })
+                .catch(error => {
+                    console.error('Error loading user permissions:', error);
+                    canCreate = false;
+                    updateCreateButtonVisibility();
+                });
+        }
+
+        function updateCreateButtonVisibility() {
+            const createButton = document.querySelector('.btn.btn-filled[onclick="openCreateModal()"]');
+            if (createButton) {
+                if (canCreate) {
+                    createButton.style.display = 'inline-flex';
+                } else {
+                    createButton.style.display = 'none';
+                }
+            }
         }
 
         // Form submissions

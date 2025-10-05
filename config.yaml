@@ -18,6 +18,8 @@ cluster:
     - 'v1.34.0'
   admin_groups:
     - kube-admin
+  creator_groups:
+    - cluster-creators
   limits:
     max_clusters: 2
     max_total_nodes: 2

@@ -23,6 +23,11 @@ rules:
   - apiGroups: ['cluster.x-k8s.io']
     resources: ['clusters', 'machinesets', 'machines', 'machinedeployments']
     verbs: ['get', 'list', 'watch']
+  # Cluster object modification permissions (capi-system namespace only)
+  - apiGroups: ['cluster.x-k8s.io']
+    resources: ['clusters']
+    verbs: ['create', 'update', 'patch', 'delete']
+    resourceNames: []
   # Infrastructure provider resources (AWS, Azure, vSphere, etc.)
   - apiGroups: ['infrastructure.cluster.x-k8s.io']
     resources: ['*']

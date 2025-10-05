@@ -19,6 +19,7 @@ spec:
         - name: chihiro
           args:
             - serve
+            - --config=/config.yaml
           command:
             - /chihiro
           image: chihiro:v0.0.0
@@ -41,6 +42,12 @@ spec:
                 secretKeyRef:
                   name: chihiro-secrets
                   key: redis_password
-          envFrom:
-            - configMapRef:
-                name: chihiro-config
+          volumeMounts:
+            - name: config
+              mountPath: /config.yaml
+              subPath: config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: chihiro-config

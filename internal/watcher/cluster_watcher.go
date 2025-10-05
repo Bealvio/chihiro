@@ -44,6 +44,7 @@ type ClusterInfo struct {
 	Annotations  map[string]interface{} `json:"annotations"`
 	APIEndpoint  string                 `json:"apiEndpoint"`
 	Groups       []string               `json:"groups"`
+	Creator      string                 `json:"creator"`
 }
 
 type ClusterWatcher struct {
@@ -430,6 +431,14 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 			}
 			clusterInfo.Groups = groups
 			slog.Debug("Parsed cluster groups", "cluster", clusterInfo.Name, "groups", clusterInfo.Groups)
+		}
+	}
+
+	// Extract creator from annotations
+	if creatorValue, exists := clusterInfo.Annotations["chihiro.io/creator"]; exists {
+		if creatorStr, ok := creatorValue.(string); ok {
+			clusterInfo.Creator = creatorStr
+			slog.Debug("Parsed cluster creator", "cluster", clusterInfo.Name, "creator", clusterInfo.Creator)
 		}
 	}
 

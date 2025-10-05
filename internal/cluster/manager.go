@@ -27,6 +27,7 @@ type CreateClusterRequest struct {
 	PodCIDR        string `json:"-"`
 	ServiceCIDR    string `json:"-"`
 	ServiceDomain  string `json:"-"`
+	Creator        string `json:"-"` // Username of the creator
 }
 
 type Manager struct {
@@ -280,6 +281,9 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		annotations = make(map[string]string)
 	}
 	annotations["chihiro.io/groups"] = groups
+	if req.Creator != "" {
+		annotations["chihiro.io/creator"] = req.Creator
+	}
 	cluster.SetAnnotations(annotations)
 
 	slog.Debug("Added Chihiro management labels and annotations", "cluster_name", req.Name)
