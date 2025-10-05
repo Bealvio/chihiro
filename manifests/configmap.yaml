@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chihiro-config
+data:
+  # OIDC Configuration - REPLACE with your values
+  OIDC_ISSUER_URL: "https://your-oidc-issuer.com"
+  OIDC_CLIENT_ID: "your-client-id"
+  OIDC_REDIRECT_URL: "http://chihiro.example.com/auth/callback"
+  # Redis Configuration
+  REDIS_ADDR: "redis:6379"
+  REDIS_USERNAME: ""
+  REDIS_SESSION_TTL: "3600"

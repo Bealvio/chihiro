@@ -1,0 +1,1336 @@
+package server
+
+const dashboardHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chihiro - Cluster Manager</title>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* NetWatch-inspired Design System */
+        :root {
+            --md-sys-color-primary: #3f51b5;
+            --md-sys-color-surface-container-highest: #ffffff;
+            --md-sys-color-surface: #f8f9fa;
+            --md-sys-color-on-surface: #202124;
+            --md-sys-color-on-surface-variant: #5f6368;
+            --md-sys-color-outline: #caced9;
+            --md-sys-color-outline-variant: #dee2e6;
+            --md-sys-color-tertiary: #6750a4;
+            --md-sys-color-error: #b3261e;
+            --md-sys-color-on-error: #ffffff;
+            --log-color-success: #1e8e3e;
+            --log-color-error: #d93025;
+            --log-color-warning: #f9ab00;
+            --log-color-info: #5f6368;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--md-sys-color-surface);
+            color: var(--md-sys-color-on-surface);
+            margin: 0;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Header */
+        header {
+            background-color: var(--md-sys-color-surface-container-highest);
+            padding: 12px 32px;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        header .title {
+            font-size: 1.4rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        header .user-info {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            color: var(--md-sys-color-on-surface-variant);
+        }
+
+        .user-detail {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+
+        /* Main Container */
+        main.container {
+            padding: 16px;
+            max-width: 1400px;
+            width: 95%;
+            margin: 0 auto;
+        }
+
+        /* Cards */
+        .card {
+            background-color: var(--md-sys-color-surface-container-highest);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--md-sys-color-outline-variant);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+
+        .card-title {
+            font-size: 1.5rem;
+            font-weight: 500;
+            margin-top: 0;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-subtitle {
+            margin-top: -4px;
+            margin-bottom: 24px;
+            font-size: 1rem;
+            color: var(--md-sys-color-on-surface-variant);
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            margin: 0;
+            cursor: pointer;
+            text-decoration: none;
+            vertical-align: middle;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            border-radius: 24px;
+            transition: transform 0.15s ease-out, opacity 0.15s ease-out;
+            will-change: transform, opacity;
+            transform: translateZ(0);
+            contain: layout style;
+        }
+
+        .btn-filled {
+            height: 48px;
+            padding: 0 24px;
+            background-color: var(--md-sys-color-primary);
+            color: #ffffff;
+            font-size: 0.95rem;
+            letter-spacing: 0.01rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.08);
+        }
+
+        .btn-filled:hover {
+            background-color: #36469e;
+            box-shadow: 0 3px 6px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-text {
+            background-color: transparent;
+            color: var(--md-sys-color-primary);
+            height: 40px;
+            padding: 0 16px;
+            border-radius: 20px;
+        }
+
+        .btn-text:hover {
+            background-color: rgba(63, 81, 181, 0.08);
+        }
+
+        .btn-small {
+            height: 36px;
+            padding: 0 16px;
+            border-radius: 18px;
+            font-size: 0.85rem;
+        }
+
+        .btn.danger {
+            background-color: var(--md-sys-color-error);
+            color: white;
+        }
+
+        .btn.danger:hover {
+            background-color: #a02119;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background-color: var(--md-sys-color-surface-container-highest);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid var(--md-sys-color-outline-variant);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 1px 2px rgba(0, 0, 0, 0.04);
+            text-align: center;
+            transition: box-shadow 0.2s ease-in-out, transform 0.2s ease-in-out;
+        }
+
+        .stat-card:hover {
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+            transform: translateY(-2px);
+        }
+
+        .stat-card h3 {
+            font-size: 2rem;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+            color: var(--md-sys-color-on-surface);
+        }
+
+        .stat-card p {
+            margin: 0;
+            font-size: 0.9rem;
+            color: var(--md-sys-color-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 500;
+        }
+
+        /* Cluster Grid */
+        .cluster-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 24px;
+        }
+
+        .cluster-card {
+            background-color: var(--md-sys-color-surface-container-highest);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid var(--md-sys-color-outline-variant);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 1px 2px rgba(0, 0, 0, 0.04);
+            transition: box-shadow 0.2s ease-in-out, transform 0.2s ease-in-out;
+        }
+
+        .cluster-card:hover {
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+            transform: translateY(-2px);
+        }
+
+        .cluster-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .cluster-name {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin: 0;
+            color: var(--md-sys-color-on-surface);
+        }
+
+        .cluster-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .cluster-status.ready {
+            background-color: rgba(30, 142, 62, 0.1);
+            color: var(--log-color-success);
+        }
+
+        .cluster-status.not-ready {
+            background-color: rgba(217, 48, 37, 0.1);
+            color: var(--log-color-error);
+        }
+
+        .cluster-details {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin: 16px 0;
+        }
+
+        .detail-item {
+            font-size: 0.85rem;
+        }
+
+        .detail-item.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .detail-label {
+            color: var(--md-sys-color-on-surface-variant);
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .detail-value {
+            color: var(--md-sys-color-on-surface);
+            font-weight: 600;
+        }
+
+        .cluster-groups {
+            margin: 16px 0;
+        }
+
+        .groups-label {
+            font-size: 0.85rem;
+            color: var(--md-sys-color-on-surface-variant);
+            font-weight: 500;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .group-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .group-chip {
+            background-color: rgba(63, 81, 181, 0.1);
+            color: var(--md-sys-color-primary);
+            padding: 4px 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .cluster-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--md-sys-color-outline-variant);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--md-sys-color-on-surface-variant);
+        }
+
+        .empty-state .material-symbols-outlined {
+            font-size: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* Status indicators */
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .status-indicator.connected {
+            background-color: rgba(30, 142, 62, 0.1);
+            color: var(--log-color-success);
+        }
+
+        .status-indicator.disconnected {
+            background-color: rgba(217, 48, 37, 0.1);
+            color: var(--log-color-error);
+        }
+
+        /* Modals */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none;
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal {
+            background-color: var(--md-sys-color-surface-container-highest);
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .modal h3 {
+            margin-top: 0;
+            margin-bottom: 16px;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--md-sys-color-on-surface-variant);
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--md-sys-color-outline);
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: var(--md-sys-color-primary);
+            box-shadow: 0 0 0 2px rgba(63, 81, 181, 0.2);
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 16px;
+            justify-content: flex-end;
+            margin-top: 32px;
+        }
+
+        .edit-btn {
+            background: transparent;
+            border: 1px solid var(--md-sys-color-outline);
+            color: var(--md-sys-color-primary);
+            padding: 6px 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: background-color 0.2s ease;
+        }
+
+        .edit-btn:hover {
+            background-color: rgba(63, 81, 181, 0.08);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            main.container {
+                padding: 16px;
+                width: 95%;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cluster-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cluster-details {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="title">
+            <span class="material-symbols-outlined">dns</span>
+            <span>Chihiro</span>
+        </div>
+        <div class="user-info">
+            <div class="user-detail">
+                <span class="material-symbols-outlined">person</span>
+                <span id="userName">Loading...</span>
+            </div>
+            <div class="status-indicator" id="connectionStatus">
+                <span class="material-symbols-outlined">cloud_off</span>
+                <span>Disconnected</span>
+            </div>
+            <a href="/auth/logout" class="btn btn-text">Logout</a>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Stats Section -->
+        <div class="stats-grid" id="statsContainer">
+            <div class="stat-card">
+                <h3 id="totalClusters">0</h3>
+                <p>Total Clusters</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="readyClusters">0</h3>
+                <p>Ready Clusters</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="pendingClusters">0</h3>
+                <p>Pending Clusters</p>
+            </div>
+        </div>
+
+        <!-- Clusters Section -->
+        <div class="card">
+            <div class="card-title">
+                <span class="material-symbols-outlined">developer_board</span>
+                <span>Kubernetes Clusters</span>
+                <div style="margin-left: auto;">
+                    <button class="btn btn-filled" onclick="openCreateModal()">
+                        <span class="material-symbols-outlined" style="margin-right: 8px;">add</span>
+                        Create Cluster
+                    </button>
+                </div>
+            </div>
+            <div class="card-subtitle">
+                Manage your Kubernetes clusters with real-time monitoring
+            </div>
+
+            <div class="cluster-grid" id="clustersContainer">
+                <!-- Clusters will be populated here -->
+            </div>
+
+            <div class="empty-state" id="emptyState" style="display: none;">
+                <span class="material-symbols-outlined">developer_board</span>
+                <h3>No clusters found</h3>
+                <p>Create your first cluster to get started</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Create Cluster Modal -->
+    <div class="modal-overlay" id="createModalOverlay">
+        <div class="modal">
+            <h3>Create New Cluster</h3>
+            <form id="createClusterForm">
+                <div class="form-group">
+                    <label for="clusterName">Cluster Name</label>
+                    <input type="text" id="clusterName" required>
+                </div>
+                <div class="form-group">
+                    <label for="clusterVersion">Kubernetes Version</label>
+                    <select id="clusterVersion" required>
+                        <option value="">Select version...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="clusterNodes">Number of Nodes</label>
+                    <input type="number" id="clusterNodes" min="1" value="1" required>
+                    <small id="limitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Loading limits...
+                    </small>
+                </div>
+                <div class="form-group" id="groupsSection">
+                    <label for="clusterGroups">Access Groups</label>
+                    <select id="clusterGroups" multiple>
+                        <!-- Options will be populated -->
+                    </select>
+                </div>
+                <div class="form-group" id="groupsTextSection" style="display: none;">
+                    <label for="clusterGroupsText">Access Groups (comma-separated)</label>
+                    <input type="text" id="clusterGroupsText" placeholder="dev-team,platform-admin">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeCreateModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Create Cluster</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Groups Modal -->
+    <div class="modal-overlay" id="editGroupsModalOverlay">
+        <div class="modal">
+            <h3>Edit Cluster Groups</h3>
+            <p>Edit access groups for cluster <strong id="editClusterName"></strong></p>
+            <form id="editGroupsForm">
+                <div class="form-group" id="editGroupsSection">
+                    <label for="editClusterGroups">Access Groups</label>
+                    <select id="editClusterGroups" multiple>
+                        <!-- Options will be populated -->
+                    </select>
+                </div>
+                <div class="form-group" id="editGroupsTextSection" style="display: none;">
+                    <label for="editClusterGroupsText">Access Groups (comma-separated)</label>
+                    <input type="text" id="editClusterGroupsText" placeholder="dev-team,platform-admin">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditGroupsModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Nodes Modal -->
+    <div class="modal-overlay" id="editNodesModalOverlay">
+        <div class="modal">
+            <h3>Edit Cluster Nodes</h3>
+            <p>Edit node count for cluster <strong id="editNodesClusterName"></strong></p>
+            <form id="editNodesForm">
+                <div class="form-group">
+                    <label for="editClusterNodes">Number of Nodes</label>
+                    <input type="number" id="editClusterNodes" min="1" max="10" required>
+                    <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Minimum: 1 node
+                    </small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditNodesModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Update Nodes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Version Modal -->
+    <div class="modal-overlay" id="editVersionModalOverlay">
+        <div class="modal">
+            <h3>Upgrade Cluster Version</h3>
+            <p>Upgrade Kubernetes version for cluster <strong id="editVersionClusterName"></strong></p>
+            <form id="editVersionForm">
+                <div class="form-group">
+                    <label for="editClusterVersion">Kubernetes Version</label>
+                    <select id="editClusterVersion" required>
+                        <option value="">Select a version to upgrade to...</option>
+                        <!-- Options will be populated with available upgrade versions -->
+                    </select>
+                    <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Only newer versions are available for upgrade
+                    </small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditVersionModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Upgrade Version</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal-overlay" id="deleteModalOverlay">
+        <div class="modal">
+            <h3>Delete Cluster</h3>
+            <p>Are you sure you want to delete cluster <strong id="deleteClusterName"></strong>?</p>
+            <p style="color: var(--md-sys-color-error); font-size: 0.9rem;">This action cannot be undone.</p>
+            <div class="form-actions">
+                <button type="button" class="btn btn-text" onclick="closeDeleteModal()">Cancel</button>
+                <button type="button" class="btn danger" onclick="confirmDelete()">Delete Cluster</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let reconnectInterval = 5000;
+        let currentUser = null;
+        let userGroups = [];
+        let isAdmin = false;
+        let deleteClusterData = null;
+        let editClusterData = null;
+
+        // Initialize everything when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            loadUserInfo().then(() => {
+                loadVersions();
+                loadUserGroups();
+                connectWebSocket();
+                loadClusters();
+                startAutoRefresh(); // Start periodic refresh as fallback
+            });
+        });
+
+        // Clean up when page unloads
+        window.addEventListener('beforeunload', function() {
+            stopAutoRefresh();
+            if (ws) {
+                ws.close();
+            }
+        });
+
+        // User info
+        function loadUserInfo() {
+            return fetch('/api/user', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(user => {
+                    currentUser = user;
+                    document.getElementById('userName').textContent = user.username;
+                    userGroups = user.groups || [];
+                    isAdmin = user.isAdmin || false; // Use the backend's admin determination
+                    console.log('User loaded:', user.username, 'Groups:', userGroups, 'IsAdmin:', isAdmin);
+                })
+                .catch(error => {
+                    console.error('Error loading user info:', error);
+                });
+        }
+
+        // WebSocket connection
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + window.location.host + '/ws';
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                updateConnectionStatus(true);
+                reconnectInterval = 5000;
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.clusters) {
+                        updateClusters(data.clusters);
+                        updateStats(data.clusters);
+                    }
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                }
+            };
+
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                updateConnectionStatus(false);
+                setTimeout(connectWebSocket, reconnectInterval);
+                reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                updateConnectionStatus(false);
+            };
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connectionStatus');
+            if (connected) {
+                statusEl.className = 'status-indicator connected';
+                statusEl.innerHTML = '<span class="material-symbols-outlined">cloud_done</span><span>Connected</span>';
+            } else {
+                statusEl.className = 'status-indicator disconnected';
+                statusEl.innerHTML = '<span class="material-symbols-outlined">cloud_off</span><span>Disconnected</span>';
+            }
+        }
+
+        // Auto-refresh functionality
+        let refreshInterval;
+        const REFRESH_INTERVAL = 30000; // 30 seconds
+
+        function startAutoRefresh() {
+            // Clear any existing interval
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+
+            // Set up periodic refresh as fallback
+            refreshInterval = setInterval(() => {
+                console.log('Auto-refreshing cluster status...');
+                loadClusters();
+            }, REFRESH_INTERVAL);
+
+            console.log('Auto-refresh started (every 30 seconds)');
+        }
+
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                console.log('Auto-refresh stopped');
+            }
+        }
+
+        // Load clusters
+        function loadClusters() {
+            fetch('/api/clusters', {
+                credentials: 'include'  // Include cookies for authentication
+            })
+                .then(response => response.json())
+                .then(clusters => {
+                    updateClusters(clusters);
+                    updateStats(clusters);
+                })
+                .catch(error => {
+                    console.error('Error loading clusters:', error);
+                });
+        }
+
+        // Update clusters display
+        function updateClusters(clusters) {
+            const container = document.getElementById('clustersContainer');
+            const emptyState = document.getElementById('emptyState');
+
+            if (!clusters || clusters.length === 0) {
+                container.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            container.style.display = 'grid';
+            emptyState.style.display = 'none';
+
+            container.innerHTML = clusters.map(cluster => {
+                const age = getAge(cluster.createdAt);
+                const statusClass = cluster.ready ? 'ready' : 'not-ready';
+                const statusText = cluster.ready ? 'Ready' : 'Not Ready';
+
+                return ` + "`" + `
+                    <div class="cluster-card">
+                        <div class="cluster-header">
+                            <h3 class="cluster-name">${cluster.name}</h3>
+                            <div class="cluster-status ${statusClass}">${statusText}</div>
+                        </div>
+
+                        <div class="cluster-details">
+                            <div class="detail-item">
+                                <div class="detail-label">
+                                    Version
+                                    ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                                </div>
+                                <div class="detail-value">${cluster.version || 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">
+                                    Nodes
+                                    ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditNodesModal('${cluster.name}', '${cluster.namespace}', ${cluster.nodes || 0})"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                                </div>
+                                <div class="detail-value">${cluster.nodes || 0}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Age</div>
+                                <div class="detail-value">${age}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Pod CIDR</div>
+                                <div class="detail-value">${cluster.network && cluster.network.podCIDRs && cluster.network.podCIDRs.length > 0 ? cluster.network.podCIDRs.join(', ') : 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Service CIDR</div>
+                                <div class="detail-value">${cluster.network && cluster.network.serviceCIDRs && cluster.network.serviceCIDRs.length > 0 ? cluster.network.serviceCIDRs.join(', ') : 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Service Domain</div>
+                                <div class="detail-value">${cluster.network && cluster.network.serviceDomain ? cluster.network.serviceDomain : 'N/A'}</div>
+                            </div>
+                            <div class="detail-item full-width">
+                                <div class="detail-label">API Endpoint</div>
+                                <div class="detail-value" style="font-size: 0.75rem; word-break: break-all;">${cluster.apiEndpoint || 'N/A'}</div>
+                            </div>
+                        </div>
+
+                        <div class="cluster-groups">
+                            <div class="groups-label">
+                                Access Groups
+                                ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                            </div>
+                            <div class="group-chips">
+                                ${cluster.groups && cluster.groups.length > 0 ?
+                                    cluster.groups.map(group => ` + "`" + `<span class="group-chip">${group}</span>` + "`" + `).join('') :
+                                    '<span style="color: var(--md-sys-color-on-surface-variant); font-size: 0.85rem;">No groups assigned</span>'
+                                }
+                            </div>
+                        </div>
+
+                        <div class="cluster-actions">
+                            <a href="/api/clusters/${cluster.name}/kubeconfig?namespace=${cluster.namespace}"
+                               class="btn btn-filled btn-small">
+                                <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
+                                Kubeconfig
+                            </a>
+                            ${canDeleteCluster(cluster) ? ` + "`" + `
+                                <button class="btn danger btn-small" onclick="openDeleteModal('${cluster.name}', '${cluster.namespace}')">
+                                    <span class="material-symbols-outlined" style="margin-right: 4px;">delete</span>
+                                    Delete
+                                </button>
+                            ` + "`" + ` : ''}
+                        </div>
+                    </div>
+                ` + "`" + `;
+            }).join('');
+        }
+
+        // Update stats
+        function updateStats(clusters) {
+            const total = clusters ? clusters.length : 0;
+            const ready = clusters ? clusters.filter(c => c.ready).length : 0;
+            const pending = total - ready;
+
+            document.getElementById('totalClusters').textContent = total;
+            document.getElementById('readyClusters').textContent = ready;
+            document.getElementById('pendingClusters').textContent = pending;
+        }
+
+        // Utility functions
+        function getAge(createdAt) {
+            const now = new Date();
+            const created = new Date(createdAt);
+            const diffMs = now - created;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+
+            if (diffDays > 0) {
+                return diffDays + 'd';
+            } else if (diffHours > 0) {
+                return diffHours + 'h';
+            } else {
+                return diffMins + 'm';
+            }
+        }
+
+        function canEditCluster(cluster) {
+            console.log('Checking edit permissions for cluster:', cluster.name, 'User groups:', userGroups, 'Cluster groups:', cluster.groups, 'IsAdmin:', isAdmin);
+            if (isAdmin) return true;
+            if (!cluster.groups) return false;
+            const canEdit = cluster.groups.some(group => userGroups.includes(group));
+            console.log('Can edit result:', canEdit);
+            return canEdit;
+        }
+
+        function canDeleteCluster(cluster) {
+            return canEditCluster(cluster);
+        }
+
+        // Modal functions
+        function openCreateModal() {
+            console.log('Opening create modal, isAdmin:', isAdmin);
+            document.getElementById('createModalOverlay').style.display = 'flex';
+            loadLimitsInfo(); // Load and display limits
+            if (isAdmin) {
+                console.log('Admin user - showing text input');
+                document.getElementById('groupsSection').style.display = 'none';
+                document.getElementById('groupsTextSection').style.display = 'block';
+            } else {
+                console.log('Regular user - showing dropdown');
+                document.getElementById('groupsSection').style.display = 'block';
+                document.getElementById('groupsTextSection').style.display = 'none';
+            }
+        }
+
+        function closeCreateModal() {
+            document.getElementById('createModalOverlay').style.display = 'none';
+            document.getElementById('createClusterForm').reset();
+        }
+
+        function openEditGroupsModal(name, namespace, currentGroups) {
+            console.log('Opening edit modal, isAdmin:', isAdmin, 'currentGroups:', currentGroups);
+            editClusterData = { name, namespace };
+            document.getElementById('editClusterName').textContent = name;
+            document.getElementById('editGroupsModalOverlay').style.display = 'flex';
+
+            if (isAdmin) {
+                console.log('Admin user - showing text input for editing');
+                document.getElementById('editGroupsSection').style.display = 'none';
+                document.getElementById('editGroupsTextSection').style.display = 'block';
+                document.getElementById('editClusterGroupsText').value = currentGroups;
+            } else {
+                console.log('Regular user - showing dropdown for editing');
+                document.getElementById('editGroupsSection').style.display = 'block';
+                document.getElementById('editGroupsTextSection').style.display = 'none';
+                // Set current selections
+                const select = document.getElementById('editClusterGroups');
+                const currentGroupsList = currentGroups.split(',').filter(g => g.trim());
+                Array.from(select.options).forEach(option => {
+                    option.selected = currentGroupsList.includes(option.value);
+                });
+            }
+        }
+
+        function closeEditGroupsModal() {
+            document.getElementById('editGroupsModalOverlay').style.display = 'none';
+            editClusterData = null;
+        }
+
+        let editNodesData = null;
+
+        function openEditNodesModal(name, namespace, currentNodes) {
+            console.log('Opening edit nodes modal for cluster:', name, 'current nodes:', currentNodes);
+            editNodesData = { name, namespace };
+            document.getElementById('editNodesClusterName').textContent = name;
+            document.getElementById('editClusterNodes').value = currentNodes;
+            document.getElementById('editNodesModalOverlay').style.display = 'flex';
+        }
+
+        function closeEditNodesModal() {
+            document.getElementById('editNodesModalOverlay').style.display = 'none';
+            editNodesData = null;
+        }
+
+        let editVersionData = null;
+        let availableVersions = [];
+
+        function openEditVersionModal(name, namespace, currentVersion) {
+            console.log('Opening edit version modal for cluster:', name, 'current version:', currentVersion);
+            editVersionData = { name, namespace, currentVersion };
+            document.getElementById('editVersionClusterName').textContent = name;
+
+            // Populate dropdown with upgrade-only versions
+            populateUpgradeVersions(currentVersion);
+
+            document.getElementById('editVersionModalOverlay').style.display = 'flex';
+        }
+
+        function closeEditVersionModal() {
+            document.getElementById('editVersionModalOverlay').style.display = 'none';
+            editVersionData = null;
+        }
+
+        function populateUpgradeVersions(currentVersion) {
+            const select = document.getElementById('editClusterVersion');
+            select.innerHTML = '<option value="">Select a version to upgrade to...</option>';
+
+            // Filter versions to only show newer ones
+            const upgradeVersions = availableVersions.filter(version => {
+                return compareVersions(version, currentVersion) > 0;
+            });
+
+            if (upgradeVersions.length === 0) {
+                select.innerHTML = '<option value="">No upgrade versions available</option>';
+                select.disabled = true;
+            } else {
+                select.disabled = false;
+                upgradeVersions.forEach(version => {
+                    const option = document.createElement('option');
+                    option.value = version;
+                    option.textContent = version;
+                    select.appendChild(option);
+                });
+            }
+        }
+
+        function compareVersions(version1, version2) {
+            // Simple semantic version comparison (v1.2.3 format)
+            if (!version1 || !version2) return 0;
+
+            const v1Parts = version1.replace(/^v/, '').split('.').map(Number);
+            const v2Parts = version2.replace(/^v/, '').split('.').map(Number);
+
+            for (let i = 0; i < Math.max(v1Parts.length, v2Parts.length); i++) {
+                const v1Part = v1Parts[i] || 0;
+                const v2Part = v2Parts[i] || 0;
+
+                if (v1Part > v2Part) return 1;
+                if (v1Part < v2Part) return -1;
+            }
+            return 0;
+        }
+
+        function openDeleteModal(name, namespace) {
+            deleteClusterData = { name, namespace };
+            document.getElementById('deleteClusterName').textContent = name;
+            document.getElementById('deleteModalOverlay').style.display = 'flex';
+        }
+
+        function closeDeleteModal() {
+            document.getElementById('deleteModalOverlay').style.display = 'none';
+            deleteClusterData = null;
+        }
+
+        // Load versions and groups
+        function loadVersions() {
+            fetch('/api/versions', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    // Store available versions globally for upgrade filtering
+                    availableVersions = data.versions || [];
+
+                    const select = document.getElementById('clusterVersion');
+                    select.innerHTML = '<option value="">Select version...</option>';
+                    availableVersions.forEach(version => {
+                        const option = document.createElement('option');
+                        option.value = version;
+                        option.textContent = version;
+                        select.appendChild(option);
+                    });
+                })
+                .catch(error => console.error('Error loading versions:', error));
+        }
+
+        function loadLimitsInfo() {
+            fetch('/api/limits', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    const limitsEl = document.getElementById('limitsInfo');
+                    const nodesInput = document.getElementById('clusterNodes');
+
+                    if (data.maxClusters > 0 || data.maxTotalNodes > 0) {
+                        let limitsText = [];
+
+                        if (data.maxClusters > 0) {
+                            limitsText.push(` + "`" + `Clusters: ${data.currentClusters}/${data.maxClusters}` + "`" + `);
+                        }
+
+                        if (data.maxTotalNodes > 0) {
+                            limitsText.push(` + "`" + `Total nodes: ${data.currentTotalNodes}/${data.maxTotalNodes}` + "`" + `);
+                            limitsText.push(` + "`" + `Available: ${data.availableNodes}` + "`" + `);
+
+                            // Set max attribute on nodes input
+                            nodesInput.max = data.availableNodes;
+                        }
+
+                        limitsEl.textContent = limitsText.join(' | ');
+
+                        // Check if at cluster limit
+                        if (data.maxClusters > 0 && data.currentClusters >= data.maxClusters) {
+                            limitsEl.style.color = 'var(--md-sys-color-error)';
+                            limitsEl.textContent = ` + "`" + `⚠️ Cluster limit reached (${data.currentClusters}/${data.maxClusters}). Cannot create more clusters.` + "`" + `;
+                        }
+                    } else {
+                        limitsEl.textContent = 'No limits configured';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading limits:', error);
+                    document.getElementById('limitsInfo').textContent = 'Failed to load limits';
+                });
+        }
+
+        function loadUserGroups() {
+            fetch('/api/user/groups', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    const createSelect = document.getElementById('clusterGroups');
+                    const editSelect = document.getElementById('editClusterGroups');
+
+                    [createSelect, editSelect].forEach(select => {
+                        select.innerHTML = '';
+                        data.groups.forEach(group => {
+                            const option = document.createElement('option');
+                            option.value = group;
+                            option.textContent = group;
+                            select.appendChild(option);
+                        });
+                    });
+                })
+                .catch(error => console.error('Error loading user groups:', error));
+        }
+
+        // Form submissions
+        document.getElementById('createClusterForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const name = document.getElementById('clusterName').value;
+            const version = document.getElementById('clusterVersion').value;
+            const nodes = parseInt(document.getElementById('clusterNodes').value);
+            let groups = '';
+
+            if (isAdmin) {
+                groups = document.getElementById('clusterGroupsText').value;
+            } else {
+                const selectedOptions = Array.from(document.getElementById('clusterGroups').selectedOptions);
+                groups = selectedOptions.map(option => option.value).join(',');
+            }
+
+            // Validate node count
+            if (nodes < 1) {
+                alert('Node count must be at least 1');
+                return;
+            }
+
+            fetch('/api/clusters', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, version, nodes, groups })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeCreateModal();
+                    loadClusters(); // Refresh clusters
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to create cluster');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error creating cluster:', error);
+                alert('Failed to create cluster: ' + error.message);
+            });
+        });
+
+        document.getElementById('editGroupsForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            if (!editClusterData) return;
+
+            let groups = '';
+            if (isAdmin) {
+                groups = document.getElementById('editClusterGroupsText').value;
+            } else {
+                const selectedOptions = Array.from(document.getElementById('editClusterGroups').selectedOptions);
+                groups = selectedOptions.map(option => option.value).join(',');
+            }
+
+            fetch(` + "`" + `/api/clusters/${editClusterData.name}/groups` + "`" + `, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    namespace: editClusterData.namespace,
+                    groups: groups
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeEditGroupsModal();
+                    loadClusters(); // Refresh clusters
+                } else {
+                    throw new Error('Failed to update groups');
+                }
+            })
+            .catch(error => {
+                console.error('Error updating groups:', error);
+                alert('Failed to update groups');
+            });
+        });
+
+        document.getElementById('editNodesForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            if (!editNodesData) return;
+
+            const nodes = parseInt(document.getElementById('editClusterNodes').value);
+
+            if (nodes < 1) {
+                alert('Node count must be at least 1');
+                return;
+            }
+
+            fetch(` + "`" + `/api/clusters/${editNodesData.name}/nodes` + "`" + `, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    namespace: editNodesData.namespace,
+                    nodes: nodes
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeEditNodesModal();
+                    loadClusters(); // Refresh clusters
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to update node count');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error updating nodes:', error);
+                alert('Failed to update node count: ' + error.message);
+            });
+        });
+
+        document.getElementById('editVersionForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            if (!editVersionData) return;
+
+            const newVersion = document.getElementById('editClusterVersion').value;
+
+            if (!newVersion) {
+                alert('Please select a version to upgrade to');
+                return;
+            }
+
+            // Double-check that the selected version is newer
+            if (compareVersions(newVersion, editVersionData.currentVersion) <= 0) {
+                alert('Selected version must be newer than the current version');
+                return;
+            }
+
+            fetch(` + "`" + `/api/clusters/${editVersionData.name}/version` + "`" + `, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    namespace: editVersionData.namespace,
+                    version: newVersion
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeEditVersionModal();
+                    loadClusters(); // Refresh clusters
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to update cluster version');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error updating version:', error);
+                alert('Failed to update cluster version: ' + error.message);
+            });
+        });
+
+        function confirmDelete() {
+            if (!deleteClusterData) return;
+
+            fetch(` + "`" + `/api/clusters/${deleteClusterData.name}` + "`" + `, {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ namespace: deleteClusterData.namespace })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeDeleteModal();
+                    loadClusters(); // Refresh clusters
+                } else {
+                    throw new Error('Failed to delete cluster');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting cluster:', error);
+                alert('Failed to delete cluster');
+            });
+        }
+
+        // Close modals when clicking outside
+        document.querySelectorAll('.modal-overlay').forEach(overlay => {
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) {
+                    overlay.style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
+`
