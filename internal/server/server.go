@@ -262,40 +262,56 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		}
 	}
 
-	// Validate groups unless user is admin
-	if req.Groups != "" {
-		if isAdmin {
-			slog.Info("Creating cluster with admin privileges", "username", user.Username, "cluster_name", req.Name, "groups", req.Groups, "user_groups", user.Groups)
-		} else {
-			// Non-admin users can only assign groups they belong to
-			requestedGroups := parseGroupsString(req.Groups)
-			userGroupMap := make(map[string]bool)
-			for _, group := range user.Groups {
-				userGroupMap[group] = true
-			}
-
-			// Check if user is requesting groups they don't belong to
-			var invalidGroups []string
-			for _, group := range requestedGroups {
-				if !userGroupMap[group] {
-					invalidGroups = append(invalidGroups, group)
-				}
-			}
-
-			if len(invalidGroups) > 0 {
-				slog.Warn("User attempted to assign groups they don't belong to", "username", user.Username, "user_groups", user.Groups, "requested_groups", requestedGroups, "invalid_groups", invalidGroups)
-				c.JSON(http.StatusForbidden, gin.H{
-					"error": "You can only assign groups you belong to",
-					"invalid_groups": invalidGroups,
-					"your_groups": user.Groups,
-				})
-				return
-			}
-
-			slog.Info("Creating cluster with validated groups", "username", user.Username, "cluster_name", req.Name, "groups", req.Groups, "user_groups", user.Groups)
-		}
+	// Validate groups
+	if isAdmin {
+		// Admins can set any groups or leave empty
+		slog.Info("Creating cluster with admin privileges", "username", user.Username, "cluster_name", req.Name, "groups", req.Groups, "user_groups", user.Groups)
 	} else {
-		slog.Info("Creating cluster with default groups", "username", user.Username, "cluster_name", req.Name, "is_admin", isAdmin)
+		// Non-admin users must assign at least one of their groups
+		if req.Groups == "" {
+			slog.Warn("Non-admin user attempted to create cluster without groups", "username", user.Username, "user_groups", user.Groups)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You must assign at least one of your groups to the cluster",
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		// Non-admin users can only assign groups they belong to
+		requestedGroups := parseGroupsString(req.Groups)
+		if len(requestedGroups) == 0 {
+			slog.Warn("Non-admin user attempted to create cluster with empty groups", "username", user.Username, "user_groups", user.Groups)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You must assign at least one of your groups to the cluster",
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		userGroupMap := make(map[string]bool)
+		for _, group := range user.Groups {
+			userGroupMap[group] = true
+		}
+
+		// Check if user is requesting groups they don't belong to
+		var invalidGroups []string
+		for _, group := range requestedGroups {
+			if !userGroupMap[group] {
+				invalidGroups = append(invalidGroups, group)
+			}
+		}
+
+		if len(invalidGroups) > 0 {
+			slog.Warn("User attempted to assign groups they don't belong to", "username", user.Username, "user_groups", user.Groups, "requested_groups", requestedGroups, "invalid_groups", invalidGroups)
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You can only assign groups you belong to",
+				"invalid_groups": invalidGroups,
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		slog.Info("Creating cluster with validated groups", "username", user.Username, "cluster_name", req.Name, "groups", req.Groups, "user_groups", user.Groups)
 	}
 
 	// Set creator information
@@ -620,16 +636,38 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
 	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
 
-	// Validate groups unless user is admin
-	if req.Groups != "" && !isAdmin {
-		// Non-admin users can only assign groups they belong to
+	// Validate groups
+	if isAdmin {
+		// Admins can set any groups or leave empty
+		slog.Debug("Admin user updating cluster groups", "username", user.Username, "cluster", clusterName, "groups", req.Groups)
+	} else {
+		// Non-admin users have restrictions on editing groups
+
+		// Parse requested groups
 		requestedGroups := parseGroupsString(req.Groups)
+		if len(requestedGroups) == 0 {
+			slog.Warn("Non-admin user attempted to update cluster with empty groups", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You must assign at least one of your groups to the cluster",
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		// Build user group map for efficient lookup
 		userGroupMap := make(map[string]bool)
 		for _, group := range user.Groups {
 			userGroupMap[group] = true
 		}
 
-		// Check if user is requesting groups they don't belong to
+		// Get current cluster groups to check what's being changed
+		currentClusterGroups := targetCluster.Groups
+		currentGroupMap := make(map[string]bool)
+		for _, group := range currentClusterGroups {
+			currentGroupMap[group] = true
+		}
+
+		// Check 1: User can only add/keep groups they belong to
 		var invalidGroups []string
 		for _, group := range requestedGroups {
 			if !userGroupMap[group] {
@@ -646,6 +684,53 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 			})
 			return
 		}
+
+		// Check 2: User cannot remove groups they don't belong to (preserve groups user doesn't control)
+		requestedGroupMap := make(map[string]bool)
+		for _, group := range requestedGroups {
+			requestedGroupMap[group] = true
+		}
+
+		var removedGroupsNotOwned []string
+		for _, currentGroup := range currentClusterGroups {
+			// If a group is in current cluster but not in requested list, it's being removed
+			if !requestedGroupMap[currentGroup] {
+				// Check if user owns this group
+				if !userGroupMap[currentGroup] {
+					removedGroupsNotOwned = append(removedGroupsNotOwned, currentGroup)
+				}
+			}
+		}
+
+		if len(removedGroupsNotOwned) > 0 {
+			slog.Warn("User attempted to remove groups they don't belong to", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "removed_groups", removedGroupsNotOwned)
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You cannot remove groups you don't belong to. You can only manage your own groups.",
+				"removed_groups": removedGroupsNotOwned,
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		// Check 3: User must keep at least one of their own groups
+		hasOwnGroup := false
+		for _, group := range requestedGroups {
+			if userGroupMap[group] {
+				hasOwnGroup = true
+				break
+			}
+		}
+
+		if !hasOwnGroup {
+			slog.Warn("Non-admin user attempted to remove all their groups", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "requested_groups", requestedGroups)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You must keep at least one of your groups assigned to the cluster",
+				"your_groups": user.Groups,
+			})
+			return
+		}
+
+		slog.Info("Non-admin user updating cluster groups", "username", user.Username, "cluster", clusterName, "old_groups", currentClusterGroups, "new_groups", requestedGroups, "user_groups", user.Groups)
 	}
 
 	if err := s.manager.UpdateClusterGroups(c.Request.Context(), clusterName, namespace, req.Groups); err != nil {

@@ -958,7 +958,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function openEditGroupsModal(name, namespace, currentGroups) {
             console.log('Opening edit modal, isAdmin:', isAdmin, 'currentGroups:', currentGroups);
-            editClusterData = { name, namespace };
+            editClusterData = { name, namespace, currentGroups };
             document.getElementById('editClusterName').textContent = name;
             document.getElementById('editGroupsModalOverlay').style.display = 'flex';
 
@@ -971,12 +971,20 @@ const dashboardHTML = `<!DOCTYPE html>
                 console.log('Regular user - showing dropdown for editing');
                 document.getElementById('editGroupsSection').style.display = 'block';
                 document.getElementById('editGroupsTextSection').style.display = 'none';
-                // Set current selections
+
+                // Set current selections - only for groups the user belongs to
                 const select = document.getElementById('editClusterGroups');
                 const currentGroupsList = currentGroups.split(',').filter(g => g.trim());
                 Array.from(select.options).forEach(option => {
-                    option.selected = currentGroupsList.includes(option.value);
+                    // Only pre-select groups the user belongs to
+                    option.selected = currentGroupsList.includes(option.value) && userGroups.includes(option.value);
                 });
+
+                // Show info about groups user doesn't control
+                const groupsNotOwned = currentGroupsList.filter(g => !userGroups.includes(g));
+                if (groupsNotOwned.length > 0) {
+                    console.log('Cluster has groups user does not belong to:', groupsNotOwned);
+                }
             }
         }
 
@@ -1209,6 +1217,12 @@ const dashboardHTML = `<!DOCTYPE html>
                 return;
             }
 
+            // Non-admin users must select at least one group
+            if (!isAdmin && (!groups || groups.trim() === '')) {
+                alert('You must assign at least one of your groups to the cluster');
+                return;
+            }
+
             fetch('/api/clusters', {
                 method: 'POST',
                 credentials: 'include',
@@ -1240,8 +1254,28 @@ const dashboardHTML = `<!DOCTYPE html>
             if (isAdmin) {
                 groups = document.getElementById('editClusterGroupsText').value;
             } else {
+                // Get selected groups (user's groups only)
                 const selectedOptions = Array.from(document.getElementById('editClusterGroups').selectedOptions);
-                groups = selectedOptions.map(option => option.value).join(',');
+                const selectedUserGroups = selectedOptions.map(option => option.value);
+
+                // Preserve groups the user doesn't belong to
+                const currentGroupsList = editClusterData.currentGroups.split(',').filter(g => g.trim());
+                const groupsNotOwned = currentGroupsList.filter(g => !userGroups.includes(g));
+
+                // Combine: user's selected groups + groups user doesn't own (preserved)
+                const allGroups = [...selectedUserGroups, ...groupsNotOwned];
+                groups = allGroups.join(',');
+
+                console.log('Submitting groups:', 'selected:', selectedUserGroups, 'preserved:', groupsNotOwned, 'combined:', groups);
+            }
+
+            // Non-admin users must select at least one of their own groups
+            if (!isAdmin) {
+                const selectedOptions = Array.from(document.getElementById('editClusterGroups').selectedOptions);
+                if (selectedOptions.length === 0) {
+                    alert('You must assign at least one of your groups to the cluster');
+                    return;
+                }
             }
 
             fetch(` + "`" + `/api/clusters/${editClusterData.name}/groups` + "`" + `, {
