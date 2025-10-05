@@ -653,6 +653,7 @@ const dashboardHTML = `<!DOCTYPE html>
         let userGroups = [];
         let isAdmin = false;
         let canCreate = false;
+        let isCreatorGroupMember = false;
         let deleteClusterData = null;
         let editClusterData = null;
 
@@ -909,12 +910,25 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         function canEditCluster(cluster) {
-            console.log('Checking edit permissions for cluster:', cluster.name, 'User groups:', userGroups, 'Cluster groups:', cluster.groups, 'IsAdmin:', isAdmin);
+            console.log('Checking edit permissions for cluster:', cluster.name, 'User groups:', userGroups, 'Cluster groups:', cluster.groups, 'IsAdmin:', isAdmin, 'Creator:', cluster.creator, 'Current user:', currentUser?.username, 'IsCreatorGroupMember:', isCreatorGroupMember);
+
+            // Admins can edit any cluster
             if (isAdmin) return true;
+
+            // User must be in creator groups to modify
+            if (!isCreatorGroupMember) return false;
+
+            // Check if user is the creator
+            if (cluster.creator && currentUser && cluster.creator === currentUser.username) {
+                console.log('User is creator, can edit');
+                return true;
+            }
+
+            // Check if user shares a group with the cluster
             if (!cluster.groups) return false;
-            const canEdit = cluster.groups.some(group => userGroups.includes(group));
-            console.log('Can edit result:', canEdit);
-            return canEdit;
+            const sharesGroup = cluster.groups.some(group => userGroups.includes(group));
+            console.log('Can edit result:', sharesGroup);
+            return sharesGroup;
         }
 
         function canDeleteCluster(cluster) {
@@ -1148,7 +1162,8 @@ const dashboardHTML = `<!DOCTYPE html>
                 .then(response => response.json())
                 .then(data => {
                     canCreate = data.canCreate || false;
-                    console.log('User permissions loaded:', 'canCreate:', canCreate, 'isAdmin:', data.isAdmin);
+                    isCreatorGroupMember = data.canCreate || false; // If can create, user is in creator groups
+                    console.log('User permissions loaded:', 'canCreate:', canCreate, 'isAdmin:', data.isAdmin, 'isCreatorGroupMember:', isCreatorGroupMember);
 
                     // Show or hide create button based on permissions
                     updateCreateButtonVisibility();
@@ -1156,6 +1171,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 .catch(error => {
                     console.error('Error loading user permissions:', error);
                     canCreate = false;
+                    isCreatorGroupMember = false;
                     updateCreateButtonVisibility();
                 });
         }
