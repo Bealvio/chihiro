@@ -68,6 +68,12 @@ func (s *Server) setupRoutes() {
 	s.router.Use(s.securityHeadersMiddleware())
 	s.router.Use(s.requestSizeLimitMiddleware())
 
+	// Load HTML templates
+	s.router.LoadHTMLGlob("web/templates/*")
+
+	// Serve static files
+	s.router.Static("/static", "web/static")
+
 	// Create rate limiters
 	authRateLimiter := middleware.AuthRateLimiter()
 	apiRateLimiter := middleware.APIRateLimiter()
@@ -78,6 +84,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/auth/callback", middleware.RateLimitMiddleware(authRateLimiter), s.auth.HandleCallback)
 	s.router.GET("/auth/logout", s.auth.HandleLogout)
 	s.router.GET("/health", s.handleHealth)
+	s.router.GET("/favicon.ico", s.handleFavicon)
 
 	// Protected routes with API rate limiting
 	protected := s.router.Group("/")
@@ -136,16 +143,14 @@ func (s *Server) requestSizeLimitMiddleware() gin.HandlerFunc {
 func (s *Server) handleLoginPage(c *gin.Context) {
 	slog.Debug("Serving login page", "remote_addr", c.ClientIP(), "user_agent", c.Request.Header.Get("User-Agent"))
 
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, loginHTML)
+	c.HTML(http.StatusOK, "login.html", nil)
 }
 
 func (s *Server) handleHome(c *gin.Context) {
 	user, _ := auth.GetUserFromContext(c.Request.Context())
 	slog.Debug("Serving dashboard page", "username", getUsernameOrAnon(user), "remote_addr", c.ClientIP())
 
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, dashboardHTML)
+	c.HTML(http.StatusOK, "dashboard.html", nil)
 }
 
 func (s *Server) handleAPI(c *gin.Context) {
@@ -947,4 +952,8 @@ func parseGroupsString(groupsStr string) []string {
 		}
 	}
 	return groups
+}
+
+func (s *Server) handleFavicon(c *gin.Context) {
+	c.File("web/static/favicon.ico")
 }

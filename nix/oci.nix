@@ -5,10 +5,16 @@
 }:
 let
   binaries = pkgs.callPackage ./binaries.nix { version = dockerVersion; };
+  webAssets = pkgs.runCommand "chihiro-web-assets" {} ''
+    mkdir -p $out/web
+    cp -r ${../web}/* $out/web/
+  '';
   makeDummyImage = {
     fakeRootCommands = ''
       ln -s var/run run
       ln -s bin/${binaries.pname} chihiro
+      mkdir -p web
+      cp -r ${webAssets}/web/* web/
     '';
     name = "${imageName}";
     contents = [

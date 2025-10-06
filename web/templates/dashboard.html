@@ -1,11 +1,10 @@
-package server
-
-const dashboardHTML = `<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chihiro - Cluster Manager</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -805,7 +804,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 const statusClass = cluster.ready ? 'ready' : 'not-ready';
                 const statusText = cluster.ready ? 'Ready' : 'Not Ready';
 
-                return ` + "`" + `
+                return `
                     <div class="cluster-card">
                         <div class="cluster-header">
                             <h3 class="cluster-name">${cluster.name}</h3>
@@ -816,14 +815,14 @@ const dashboardHTML = `<!DOCTYPE html>
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Version
-                                    ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                                    ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
                                 <div class="detail-value">${cluster.version || 'N/A'}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Nodes
-                                    ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditNodesModal('${cluster.name}', '${cluster.namespace}', ${cluster.nodes || 0})"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                                    ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditNodesModal('${cluster.name}', '${cluster.namespace}', ${cluster.nodes || 0})"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
                                 <div class="detail-value">${cluster.nodes || 0}</div>
                             </div>
@@ -852,11 +851,11 @@ const dashboardHTML = `<!DOCTYPE html>
                         <div class="cluster-groups">
                             <div class="groups-label">
                                 Access Groups
-                                ${canEditCluster(cluster) ? ` + "`" + `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` + "`" + ` : ''}
+                                ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                             </div>
                             <div class="group-chips">
                                 ${cluster.groups && cluster.groups.length > 0 ?
-                                    cluster.groups.map(group => ` + "`" + `<span class="group-chip">${group}</span>` + "`" + `).join('') :
+                                    cluster.groups.map(group => `<span class="group-chip">${group}</span>`).join('') :
                                     '<span style="color: var(--md-sys-color-on-surface-variant); font-size: 0.85rem;">No groups assigned</span>'
                                 }
                             </div>
@@ -868,15 +867,15 @@ const dashboardHTML = `<!DOCTYPE html>
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
                             </a>
-                            ${canDeleteCluster(cluster) ? ` + "`" + `
+                            ${canDeleteCluster(cluster) ? `
                                 <button class="btn danger btn-small" onclick="openDeleteModal('${cluster.name}', '${cluster.namespace}')">
                                     <span class="material-symbols-outlined" style="margin-right: 4px;">delete</span>
                                     Delete
                                 </button>
-                            ` + "`" + ` : ''}
+                            ` : ''}
                         </div>
                     </div>
-                ` + "`" + `;
+                `;
             }).join('');
         }
 
@@ -1113,12 +1112,12 @@ const dashboardHTML = `<!DOCTYPE html>
                         let limitsText = [];
 
                         if (data.maxClusters > 0) {
-                            limitsText.push(` + "`" + `Clusters: ${data.currentClusters}/${data.maxClusters}` + "`" + `);
+                            limitsText.push(`Clusters: ${data.currentClusters}/${data.maxClusters}`);
                         }
 
                         if (data.maxTotalNodes > 0) {
-                            limitsText.push(` + "`" + `Total nodes: ${data.currentTotalNodes}/${data.maxTotalNodes}` + "`" + `);
-                            limitsText.push(` + "`" + `Available: ${data.availableNodes}` + "`" + `);
+                            limitsText.push(`Total nodes: ${data.currentTotalNodes}/${data.maxTotalNodes}`);
+                            limitsText.push(`Available: ${data.availableNodes}`);
 
                             // Set max attribute on nodes input
                             nodesInput.max = data.availableNodes;
@@ -1129,7 +1128,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         // Check if at cluster limit
                         if (data.maxClusters > 0 && data.currentClusters >= data.maxClusters) {
                             limitsEl.style.color = 'var(--md-sys-color-error)';
-                            limitsEl.textContent = ` + "`" + `⚠️ Cluster limit reached (${data.currentClusters}/${data.maxClusters}). Cannot create more clusters.` + "`" + `;
+                            limitsEl.textContent = `⚠️ Cluster limit reached (${data.currentClusters}/${data.maxClusters}). Cannot create more clusters.`;
                         }
                     } else {
                         limitsEl.textContent = 'No limits configured';
@@ -1278,7 +1277,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 }
             }
 
-            fetch(` + "`" + `/api/clusters/${editClusterData.name}/groups` + "`" + `, {
+            fetch(`/api/clusters/${editClusterData.name}/groups`, {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -1313,7 +1312,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 return;
             }
 
-            fetch(` + "`" + `/api/clusters/${editNodesData.name}/nodes` + "`" + `, {
+            fetch(`/api/clusters/${editNodesData.name}/nodes`, {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -1356,7 +1355,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 return;
             }
 
-            fetch(` + "`" + `/api/clusters/${editVersionData.name}/version` + "`" + `, {
+            fetch(`/api/clusters/${editVersionData.name}/version`, {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -1384,7 +1383,7 @@ const dashboardHTML = `<!DOCTYPE html>
         function confirmDelete() {
             if (!deleteClusterData) return;
 
-            fetch(` + "`" + `/api/clusters/${deleteClusterData.name}` + "`" + `, {
+            fetch(`/api/clusters/${deleteClusterData.name}`, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -1415,4 +1414,3 @@ const dashboardHTML = `<!DOCTYPE html>
     </script>
 </body>
 </html>
-`
