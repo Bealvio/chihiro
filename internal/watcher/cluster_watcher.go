@@ -45,6 +45,7 @@ type ClusterInfo struct {
 	APIEndpoint  string                 `json:"apiEndpoint"`
 	Groups       []string               `json:"groups"`
 	Creator      string                 `json:"creator"`
+	Domain       string                 `json:"domain"`
 }
 
 type ClusterWatcher struct {
@@ -268,12 +269,15 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
+	// Get domain for cluster
+	domain := viper.GetString("cluster.domain")
+	if domain == "" {
+		domain = "bealv.io" // Default domain
+	}
+	clusterInfo.Domain = domain
+
 	// Fallback: construct endpoint using cluster name pattern if not found in status
 	if clusterInfo.APIEndpoint == "" {
-		domain := viper.GetString("cluster.domain")
-		if domain == "" {
-			domain = "bealv.io" // Default domain
-		}
 		port := viper.GetInt("cluster.port")
 		if port == 0 {
 			port = 443 // Default port

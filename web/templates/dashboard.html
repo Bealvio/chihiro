@@ -867,6 +867,13 @@
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
                             </a>
+                            <a href="https://documentation.${cluster.name}.${cluster.domain}"
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               class="btn btn-filled btn-small">
+                                <span class="material-symbols-outlined" style="margin-right: 4px;">description</span>
+                                Docs
+                            </a>
                             ${canDeleteCluster(cluster) ? `
                                 <button class="btn danger btn-small" onclick="openDeleteModal('${cluster.name}', '${cluster.namespace}')">
                                     <span class="material-symbols-outlined" style="margin-right: 4px;">delete</span>
