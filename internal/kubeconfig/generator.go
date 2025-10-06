@@ -20,12 +20,12 @@ type Generator struct {
 }
 
 type OIDCConfig struct {
-	IssuerURL     string
-	ClientID      string
-	ClientSecret  string
-	CAData        string
-	Username      string
-	Groups        []string
+	IssuerURL    string
+	ClientID     string
+	ClientSecret string
+	CAData       string
+	Username     string
+	Groups       []string
 }
 
 type KubeconfigData struct {
@@ -42,8 +42,23 @@ func NewGenerator(client dynamic.Interface) *Generator {
 	}
 }
 
-func (g *Generator) GenerateKubeconfig(ctx context.Context, cluster *watcher.ClusterInfo, username string, userGroups []string) (string, error) {
-	slog.Info("Generating kubeconfig", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "username", username, "user_groups", userGroups)
+func (g *Generator) GenerateKubeconfig(
+	ctx context.Context,
+	cluster *watcher.ClusterInfo,
+	username string,
+	userGroups []string,
+) (string, error) {
+	slog.Info(
+		"Generating kubeconfig",
+		"cluster_name",
+		cluster.Name,
+		"namespace",
+		cluster.Namespace,
+		"username",
+		username,
+		"user_groups",
+		userGroups,
+	)
 
 	// Get Kamaji control plane information
 	kamajiCP, err := g.getKamajiControlPlane(ctx, cluster)
@@ -83,7 +98,19 @@ func (g *Generator) GenerateKubeconfig(ctx context.Context, cluster *watcher.Clu
 	}
 
 	kubeconfigContent := g.renderKubeconfig(kubeconfigData)
-	slog.Info("Successfully generated kubeconfig", "cluster_name", cluster.Name, "username", username, "server_url", serverURL, "issuer_url", oidcConfig.IssuerURL, "size_bytes", len(kubeconfigContent))
+	slog.Info(
+		"Successfully generated kubeconfig",
+		"cluster_name",
+		cluster.Name,
+		"username",
+		username,
+		"server_url",
+		serverURL,
+		"issuer_url",
+		oidcConfig.IssuerURL,
+		"size_bytes",
+		len(kubeconfigContent),
+	)
 
 	return kubeconfigContent, nil
 }
@@ -145,7 +172,17 @@ func (g *Generator) getKamajiControlPlane(ctx context.Context, cluster *watcher.
 
 	kamajiCP, err := g.client.Resource(kamajiGVR).Namespace(cpNamespace).Get(ctx, cpName, metav1.GetOptions{})
 	if err != nil {
-		slog.Error("Failed to get Kamaji control plane resource", "cluster_name", cluster.Name, "cp_name", cpName, "cp_namespace", cpNamespace, "error", err)
+		slog.Error(
+			"Failed to get Kamaji control plane resource",
+			"cluster_name",
+			cluster.Name,
+			"cp_name",
+			cpName,
+			"cp_namespace",
+			cpNamespace,
+			"error",
+			err,
+		)
 		return nil, fmt.Errorf("failed to get Kamaji control plane: %v", err)
 	}
 
@@ -156,7 +193,15 @@ func (g *Generator) getKamajiControlPlane(ctx context.Context, cluster *watcher.
 func (g *Generator) extractOIDCConfig(kamajiCP *unstructured.Unstructured) (*OIDCConfig, error) {
 	// Debug: log the entire Kamaji control plane structure
 	cpBytes, _ := json.MarshalIndent(kamajiCP.Object, "", "  ")
-	slog.Debug("Kamaji control plane structure", "cluster", kamajiCP.GetName(), "namespace", kamajiCP.GetNamespace(), "structure", string(cpBytes))
+	slog.Debug(
+		"Kamaji control plane structure",
+		"cluster",
+		kamajiCP.GetName(),
+		"namespace",
+		kamajiCP.GetNamespace(),
+		"structure",
+		string(cpBytes),
+	)
 
 	spec, ok := kamajiCP.Object["spec"].(map[string]interface{})
 	if !ok {
@@ -191,13 +236,13 @@ func (g *Generator) extractOIDCConfig(kamajiCP *unstructured.Unstructured) (*OID
 				if argStr, ok := arg.(string); ok {
 					slog.Debug("Processing API server arg", "cluster", kamajiCP.GetName(), "index", i, "arg", argStr)
 					// Parse arguments like "--oidc-issuer-url=https://zitadel.bealv.io"
-					if after, ok0 :=strings.CutPrefix(argStr, "--oidc-issuer-url="); ok0  {
+					if after, ok0 := strings.CutPrefix(argStr, "--oidc-issuer-url="); ok0 {
 						oidcConfig.IssuerURL = after
 						slog.Debug("Found OIDC issuer URL", "cluster", kamajiCP.GetName(), "issuer_url", oidcConfig.IssuerURL)
-					} else if after0, ok1 :=strings.CutPrefix(argStr, "--oidc-client-id="); ok1  {
+					} else if after0, ok1 := strings.CutPrefix(argStr, "--oidc-client-id="); ok1 {
 						oidcConfig.ClientID = after0
 						slog.Debug("Found OIDC client ID", "cluster", kamajiCP.GetName(), "client_id", oidcConfig.ClientID)
-					} else if after1, ok2 :=strings.CutPrefix(argStr, "--oidc-client-secret="); ok2  {
+					} else if after1, ok2 := strings.CutPrefix(argStr, "--oidc-client-secret="); ok2 {
 						oidcConfig.ClientSecret = after1
 						slog.Debug("Found OIDC client secret", "cluster", kamajiCP.GetName())
 					}
@@ -250,11 +295,31 @@ func (g *Generator) extractOIDCConfig(kamajiCP *unstructured.Unstructured) (*OID
 
 	// Validate required OIDC fields
 	if oidcConfig.IssuerURL == "" || oidcConfig.ClientID == "" {
-		slog.Error("Required OIDC configuration missing", "cluster", kamajiCP.GetName(), "issuer_url", oidcConfig.IssuerURL, "client_id", oidcConfig.ClientID)
-		return nil, fmt.Errorf("required OIDC configuration not found (issuerURL: %q, clientID: %q)", oidcConfig.IssuerURL, oidcConfig.ClientID)
+		slog.Error(
+			"Required OIDC configuration missing",
+			"cluster",
+			kamajiCP.GetName(),
+			"issuer_url",
+			oidcConfig.IssuerURL,
+			"client_id",
+			oidcConfig.ClientID,
+		)
+		return nil, fmt.Errorf(
+			"required OIDC configuration not found (issuerURL: %q, clientID: %q)",
+			oidcConfig.IssuerURL,
+			oidcConfig.ClientID,
+		)
 	}
 
-	slog.Info("Successfully extracted OIDC configuration", "cluster", kamajiCP.GetName(), "issuer_url", oidcConfig.IssuerURL, "client_id", oidcConfig.ClientID)
+	slog.Info(
+		"Successfully extracted OIDC configuration",
+		"cluster",
+		kamajiCP.GetName(),
+		"issuer_url",
+		oidcConfig.IssuerURL,
+		"client_id",
+		oidcConfig.ClientID,
+	)
 	return oidcConfig, nil
 }
 
@@ -286,7 +351,6 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo) (string, er
 
 	return endpoint, nil
 }
-
 
 func (g *Generator) renderKubeconfig(data *KubeconfigData) string {
 	// Build cluster configuration - using public CA, no need for custom certificate-authority-data
@@ -330,16 +394,16 @@ users:
 	namespace := fmt.Sprintf("%s-kube-user-default", data.ClusterName)
 
 	return fmt.Sprintf(template,
-		clusterConfig,                           // cluster configuration
-		data.ClusterName,                        // cluster name
-		data.ClusterName,                        // context cluster
-		namespace,                               // context namespace
-		userName,                                // context user
-		contextName,                             // context name
-		contextName,                             // current-context
-		userName,                                // user name
-		data.OIDCConfig.IssuerURL,               // oidc-issuer-url
-		data.OIDCConfig.ClientID,                // oidc-client-id
+		clusterConfig,             // cluster configuration
+		data.ClusterName,          // cluster name
+		data.ClusterName,          // context cluster
+		namespace,                 // context namespace
+		userName,                  // context user
+		contextName,               // context name
+		contextName,               // current-context
+		userName,                  // user name
+		data.OIDCConfig.IssuerURL, // oidc-issuer-url
+		data.OIDCConfig.ClientID,  // oidc-client-id
 	)
 }
 
