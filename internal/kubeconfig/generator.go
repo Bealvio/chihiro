@@ -191,14 +191,14 @@ func (g *Generator) extractOIDCConfig(kamajiCP *unstructured.Unstructured) (*OID
 				if argStr, ok := arg.(string); ok {
 					slog.Debug("Processing API server arg", "cluster", kamajiCP.GetName(), "index", i, "arg", argStr)
 					// Parse arguments like "--oidc-issuer-url=https://zitadel.bealv.io"
-					if strings.HasPrefix(argStr, "--oidc-issuer-url=") {
-						oidcConfig.IssuerURL = strings.TrimPrefix(argStr, "--oidc-issuer-url=")
+					if after, ok0 :=strings.CutPrefix(argStr, "--oidc-issuer-url="); ok0  {
+						oidcConfig.IssuerURL = after
 						slog.Debug("Found OIDC issuer URL", "cluster", kamajiCP.GetName(), "issuer_url", oidcConfig.IssuerURL)
-					} else if strings.HasPrefix(argStr, "--oidc-client-id=") {
-						oidcConfig.ClientID = strings.TrimPrefix(argStr, "--oidc-client-id=")
+					} else if after0, ok1 :=strings.CutPrefix(argStr, "--oidc-client-id="); ok1  {
+						oidcConfig.ClientID = after0
 						slog.Debug("Found OIDC client ID", "cluster", kamajiCP.GetName(), "client_id", oidcConfig.ClientID)
-					} else if strings.HasPrefix(argStr, "--oidc-client-secret=") {
-						oidcConfig.ClientSecret = strings.TrimPrefix(argStr, "--oidc-client-secret=")
+					} else if after1, ok2 :=strings.CutPrefix(argStr, "--oidc-client-secret="); ok2  {
+						oidcConfig.ClientSecret = after1
 						slog.Debug("Found OIDC client secret", "cluster", kamajiCP.GetName())
 					}
 				} else if argMap, ok := arg.(map[string]interface{}); ok {
@@ -303,6 +303,7 @@ clusters:
 contexts:
 - context:
     cluster: %s
+    namespace: %s
     user: %s
   name: %s
 current-context: %s
@@ -326,11 +327,13 @@ users:
 
 	contextName := data.ClusterName
 	userName := fmt.Sprintf("%s-oidc", data.OIDCConfig.Username)
+	namespace := fmt.Sprintf("%s-kube-user-default", data.ClusterName)
 
 	return fmt.Sprintf(template,
 		clusterConfig,                           // cluster configuration
 		data.ClusterName,                        // cluster name
 		data.ClusterName,                        // context cluster
+		namespace,                               // context namespace
 		userName,                                // context user
 		contextName,                             // context name
 		contextName,                             // current-context
