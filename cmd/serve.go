@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,7 +41,7 @@ func init() {
 func runServer() {
 	// Configure structured logging
 	logLevel := slog.LevelInfo
-	if os.Getenv("DEBUG") != "" {
+	if os.Getenv("DEBUG") != "" || os.Getenv("CHIHIRO_DEBUG") != "" {
 		logLevel = slog.LevelDebug
 	}
 
@@ -51,6 +53,78 @@ func runServer() {
 	slog.SetDefault(slog.New(handler))
 
 	slog.Info("Starting cluster watcher application", "version", "v1.0.0", "log_level", logLevel.String())
+	slog.Info("Loading configuration from environment variables and config file")
+
+	// Override viper config with environment variables
+	if env := os.Getenv("CHIHIRO_CLUSTER_DOMAIN"); env != "" {
+		viper.Set("cluster.domain", env)
+	}
+	if env := os.Getenv("CHIHIRO_CLUSTER_PORT"); env != "" {
+		if port, err := strconv.Atoi(env); err == nil {
+			viper.Set("cluster.port", port)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_ADMIN_GROUPS"); env != "" {
+		var groups []string
+		for _, item := range strings.Split(env, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				groups = append(groups, trimmed)
+			}
+		}
+		if len(groups) > 0 {
+			viper.Set("cluster.admin_groups", groups)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_CREATOR_GROUPS"); env != "" {
+		var groups []string
+		for _, item := range strings.Split(env, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				groups = append(groups, trimmed)
+			}
+		}
+		if len(groups) > 0 {
+			viper.Set("cluster.creator_groups", groups)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_AVAILABLE_VERSIONS"); env != "" {
+		var versions []string
+		for _, item := range strings.Split(env, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				versions = append(versions, trimmed)
+			}
+		}
+		if len(versions) > 0 {
+			viper.Set("cluster.available_versions", versions)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_MAX_CLUSTERS"); env != "" {
+		if maxClusters, err := strconv.Atoi(env); err == nil {
+			viper.Set("cluster.limits.max_clusters", maxClusters)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_MAX_TOTAL_NODES"); env != "" {
+		if maxNodes, err := strconv.Atoi(env); err == nil {
+			viper.Set("cluster.limits.max_total_nodes", maxNodes)
+		}
+	}
+
+	// Log cluster configuration
+	clusterDomain := viper.GetString("cluster.domain")
+	clusterPort := viper.GetInt("cluster.port")
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+	availableVersions := viper.GetStringSlice("cluster.available_versions")
+	maxClusters := viper.GetInt("cluster.limits.max_clusters")
+	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
+
+	slog.Info("Cluster configuration",
+		"domain", clusterDomain,
+		"port", clusterPort,
+		"admin_groups", adminGroups,
+		"creator_groups", creatorGroups,
+		"available_versions", availableVersions,
+		"max_clusters", maxClusters,
+		"max_total_nodes", maxTotalNodes)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -68,19 +142,31 @@ func runServer() {
 
 	clusterManager := cluster.NewManager(clusterWatcher.GetClient())
 
-	// Setup OIDC authentication
-	host := viper.GetString("host")
-	port := viper.GetInt("port")
+	// Setup server configuration with environment variable overrides
+	host := getEnvOrConfig("CHIHIRO_HOST", "host", "0.0.0.0")
+	port := getEnvOrConfigInt("CHIHIRO_PORT", "port", 8080)
 
+	slog.Info("Server configuration", "host", host, "port", port)
+
+	// Setup OIDC authentication
 	var authConfig auth.Config
 	viper.UnmarshalKey("oidc", &authConfig)
 
 	// Override with environment variables (takes precedence over config file)
-	if envSecret := os.Getenv("OIDC_CLIENT_SECRET"); envSecret != "" {
-		authConfig.ClientSecret = envSecret
+	if env := os.Getenv("CHIHIRO_OIDC_ISSUER_URL"); env != "" {
+		authConfig.IssuerURL = env
 	}
-	if envSessionKey := os.Getenv("SESSION_KEY"); envSessionKey != "" {
-		authConfig.SessionKey = envSessionKey
+	if env := os.Getenv("CHIHIRO_OIDC_CLIENT_ID"); env != "" {
+		authConfig.ClientID = env
+	}
+	if env := os.Getenv("CHIHIRO_OIDC_CLIENT_SECRET"); env != "" {
+		authConfig.ClientSecret = env
+	}
+	if env := os.Getenv("CHIHIRO_OIDC_REDIRECT_URL"); env != "" {
+		authConfig.RedirectURL = env
+	}
+	if env := os.Getenv("CHIHIRO_SESSION_KEY"); env != "" {
+		authConfig.SessionKey = env
 	}
 
 	// Set default redirect URL if not provided
@@ -88,40 +174,30 @@ func runServer() {
 		authConfig.RedirectURL = fmt.Sprintf("http://%s:%d/auth/callback", host, port)
 	}
 
+	slog.Info("OIDC configuration", "issuer_url", authConfig.IssuerURL, "client_id", authConfig.ClientID, "redirect_url", authConfig.RedirectURL)
+
 	// Validate OIDC configuration
 	if authConfig.IssuerURL == "" || authConfig.ClientID == "" || authConfig.ClientSecret == "" {
 		slog.Error("OIDC configuration incomplete", "missing_fields", "issuer-url, client-id, or client-secret")
-		slog.Info("Set OIDC_CLIENT_SECRET environment variable or configure in config file")
+		slog.Error("Set CHIHIRO_OIDC_ISSUER_URL, CHIHIRO_OIDC_CLIENT_ID, and CHIHIRO_OIDC_CLIENT_SECRET environment variables")
 		os.Exit(1)
 	}
 
 	// Validate session key (must be 32+ bytes for AES-256)
 	if len(authConfig.SessionKey) < 32 {
 		slog.Error("Session key must be at least 32 bytes", "current_length", len(authConfig.SessionKey))
-		slog.Info("Set SESSION_KEY environment variable with a secure random key")
+		slog.Error("Set CHIHIRO_SESSION_KEY environment variable with a secure random key (openssl rand -base64 32)")
 		os.Exit(1)
 	}
 
-	// Setup Redis session store
-	redisAddr := viper.GetString("redis.addr")
-	redisUsername := viper.GetString("redis.username")
-	redisPassword := viper.GetString("redis.password")
+	// Setup Redis session store with environment variable overrides
+	redisAddr := getEnvOrConfig("CHIHIRO_REDIS_ADDR", "redis.addr", "localhost:6379")
+	redisUsername := getEnvOrConfig("CHIHIRO_REDIS_USERNAME", "redis.username", "")
+	redisPassword := getEnvOrConfig("CHIHIRO_REDIS_PASSWORD", "redis.password", "")
+	sessionTTL := getEnvOrConfigInt("CHIHIRO_SESSION_TTL", "redis.session_ttl", 3600)
 
-	// Override Redis password with environment variable if set
-	if envRedisPassword := os.Getenv("REDIS_PASSWORD"); envRedisPassword != "" {
-		redisPassword = envRedisPassword
-	}
-
-	sessionTTL := viper.GetInt("redis.session_ttl")
-
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
-	}
-	if sessionTTL <= 0 {
-		sessionTTL = 3600 // 1 hour default
-	}
-
-	slog.Info("Connecting to Redis for session storage", "addr", redisAddr, "session_ttl", sessionTTL)
+	slog.Info("Redis configuration", "addr", redisAddr, "username", redisUsername, "session_ttl", sessionTTL)
+	slog.Info("Connecting to Redis for session storage")
 
 	// Test Redis connection
 	redisClient := redis.NewClient(&redis.Options{
@@ -204,4 +280,47 @@ func runServer() {
 	}
 
 	slog.Info("Server exited successfully")
+}
+
+// Helper functions for environment variable overrides
+func getEnvOrConfig(envKey, configKey, defaultValue string) string {
+	if env := os.Getenv(envKey); env != "" {
+		return env
+	}
+	if val := viper.GetString(configKey); val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+func getEnvOrConfigInt(envKey, configKey string, defaultValue int) int {
+	if env := os.Getenv(envKey); env != "" {
+		if val, err := strconv.Atoi(env); err == nil {
+			return val
+		}
+	}
+	if val := viper.GetInt(configKey); val != 0 {
+		return val
+	}
+	return defaultValue
+}
+
+func getEnvOrConfigStringSlice(envKey, configKey string, defaultValue []string) []string {
+	if env := os.Getenv(envKey); env != "" {
+		// Parse comma-separated values
+		var result []string
+		for _, item := range strings.Split(env, ",") {
+			trimmed := strings.TrimSpace(item)
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		if len(result) > 0 {
+			return result
+		}
+	}
+	if val := viper.GetStringSlice(configKey); len(val) > 0 {
+		return val
+	}
+	return defaultValue
 }

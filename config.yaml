@@ -1,29 +1,50 @@
+# Chihiro Configuration
+# All values can be overridden with environment variables using the CHIHIRO_ prefix
+# Example: oidc.issuer_url can be set with CHIHIRO_OIDC_ISSUER_URL
+
+# OIDC Authentication Configuration
 oidc:
-  issuer_url: 'https://zitadel.bealv.io'
-  client_id: '340711715261909669'
-  # Set via environment variables: OIDC_CLIENT_SECRET, SESSION_KEY
-  # client_secret: ''  # Use OIDC_CLIENT_SECRET env var
-  # session_key: ''    # Use SESSION_KEY env var (32+ random bytes recommended)
-  redirect_url: 'http://localhost:8080/auth/callback'
+  issuer_url: 'https://zitadel.bealv.io'  # CHIHIRO_OIDC_ISSUER_URL
+  client_id: '340711715261909669'          # CHIHIRO_OIDC_CLIENT_ID
+  # client_secret: ''                      # CHIHIRO_OIDC_CLIENT_SECRET (required, use env var)
+  # session_key: ''                        # CHIHIRO_SESSION_KEY (required, 32+ bytes, use env var)
+  redirect_url: 'http://localhost:8080/auth/callback'  # CHIHIRO_OIDC_REDIRECT_URL
+
+# Redis Configuration (for session storage)
 redis:
-  addr: 'localhost:6379'
-  username: ''
-  # SECURITY: Set via REDIS_PASSWORD environment variable
-  # password: ''  # Use REDIS_PASSWORD env var
-  session_ttl: 3600
+  addr: 'localhost:6379'      # CHIHIRO_REDIS_ADDR
+  username: ''                # CHIHIRO_REDIS_USERNAME
+  # password: ''              # CHIHIRO_REDIS_PASSWORD (use env var for security)
+  session_ttl: 3600           # CHIHIRO_SESSION_TTL (seconds, default: 3600)
+
+# Server Configuration
+# host: '0.0.0.0'             # CHIHIRO_HOST (default: 0.0.0.0)
+# port: 8080                  # CHIHIRO_PORT (default: 8080)
+
+# Cluster Management Configuration
 cluster:
-  domain: 'bealv.io'
-  port: 443
+  domain: 'bealv.io'          # CHIHIRO_CLUSTER_DOMAIN
+  port: 443                   # CHIHIRO_CLUSTER_PORT
+
+  # Available Kubernetes versions for new clusters - CHIHIRO_AVAILABLE_VERSIONS (comma-separated)
   available_versions:
     - 'v1.34.0'
+
+  # Admin groups (full access to all clusters) - CHIHIRO_ADMIN_GROUPS (comma-separated)
   admin_groups:
     - kube-admin
+
+  # Creator groups (can create and manage their own clusters) - CHIHIRO_CREATOR_GROUPS (comma-separated)
   creator_groups:
     - kube-user
+
+  # Resource limits
   limits:
-    max_clusters: 2
-    max_total_nodes: 2
+    max_clusters: 2           # CHIHIRO_MAX_CLUSTERS - Maximum clusters per tenant
+    max_total_nodes: 2        # CHIHIRO_MAX_TOTAL_NODES - Maximum total nodes across all clusters
+
   # Cluster template as raw YAML string
+  # Placeholders: PLACEHOLDER_NAME, PLACEHOLDER_VERSION, PLACEHOLDER_NODES, PLACEHOLDER_SERVICE_DOMAIN
   template: |
     apiVersion: cluster.x-k8s.io/v1beta1
     kind: Cluster
@@ -70,5 +91,6 @@ cluster:
             - class: default-worker
               name: worker
               replicas: PLACEHOLDER_NODES
+
   # Field mapping: specify where to inject the node count
   node_count_path: 'spec.topology.workers.machineDeployments[0].replicas'
