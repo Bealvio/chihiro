@@ -581,24 +581,45 @@ func (cw *ClusterWatcher) monitorClusterReadiness(ctx context.Context) {
 
 // checkAllClustersReadiness checks readiness for all clusters and updates their status
 func (cw *ClusterWatcher) checkAllClustersReadiness() {
-	cw.mutex.Lock()
-	defer cw.mutex.Unlock()
-
-	updatedAny := false
+	// Copy cluster list to avoid holding lock during network calls
+	cw.mutex.RLock()
+	clustersCopy := make([]*ClusterInfo, 0, len(cw.clusters))
 	for _, cluster := range cw.clusters {
+		clustersCopy = append(clustersCopy, cluster)
+	}
+	cw.mutex.RUnlock()
+
+	// Test reachability without holding lock (network calls can be slow)
+	type readinessResult struct {
+		cluster  *ClusterInfo
+		oldReady bool
+		newReady bool
+	}
+	results := make([]readinessResult, 0)
+
+	for _, cluster := range clustersCopy {
 		if cluster.APIEndpoint != "" {
 			oldReady := cluster.Ready
-			cluster.Ready = cw.testAPIEndpointReachability(cluster.APIEndpoint)
+			newReady := cw.testAPIEndpointReachability(cluster.APIEndpoint)
 
-			if oldReady != cluster.Ready {
-				slog.Info("Cluster readiness changed", "cluster", cluster.Name, "endpoint", cluster.APIEndpoint, "old_ready", oldReady, "new_ready", cluster.Ready)
-				updatedAny = true
+			if oldReady != newReady {
+				slog.Info("Cluster readiness changed", "cluster", cluster.Name, "endpoint", cluster.APIEndpoint, "old_ready", oldReady, "new_ready", newReady)
+				results = append(results, readinessResult{cluster, oldReady, newReady})
 			}
 		}
 	}
 
-	// Broadcast update if any cluster readiness changed
-	if updatedAny {
+	// Update cluster readiness with lock (fast operation)
+	if len(results) > 0 {
+		cw.mutex.Lock()
+		for _, result := range results {
+			if c, exists := cw.clusters[result.cluster.Name]; exists {
+				c.Ready = result.newReady
+			}
+		}
+		cw.mutex.Unlock()
+
+		// Broadcast update after releasing lock
 		cw.broadcastUpdate()
 	}
 }
