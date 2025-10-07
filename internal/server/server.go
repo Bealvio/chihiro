@@ -93,6 +93,7 @@ func (s *Server) setupRoutes() {
 
 	protected.GET("/", s.handleHome)
 	protected.GET("/api/user", s.handleUserInfo)
+	protected.GET("/api/config", s.handleGetConfig)
 	protected.GET("/api/clusters", s.handleAPI)
 	protected.POST("/api/clusters", s.handleCreateCluster)
 	protected.DELETE("/api/clusters/:name", s.handleDeleteCluster)
@@ -185,6 +186,26 @@ func (s *Server) handleUserInfo(c *gin.Context) {
 	slog.Debug("Serving user info", "username", user.Username, "groups", user.Groups, "isAdmin", isAdmin, "adminGroups", adminGroups)
 
 	c.JSON(http.StatusOK, &userWithAdmin)
+}
+
+func (s *Server) handleGetConfig(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Get documentation URL from config with environment variable override
+	docsURL := viper.GetString("docs_url")
+	if env := os.Getenv("CHIHIRO_DOCS_URL"); env != "" {
+		docsURL = env
+	}
+
+	slog.Debug("Serving config", "username", user.Username, "docs_url", docsURL)
+
+	c.JSON(http.StatusOK, gin.H{
+		"docsUrl": docsURL,
+	})
 }
 
 func (s *Server) handleWebSocket(c *gin.Context) {

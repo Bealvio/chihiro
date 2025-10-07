@@ -474,6 +474,10 @@
                 <span class="material-symbols-outlined">cloud_off</span>
                 <span>Disconnected</span>
             </div>
+            <a href="#" id="docsLink" class="btn btn-text" style="display: none;" target="_blank" rel="noopener noreferrer">
+                <span class="material-symbols-outlined" style="margin-right: 4px;">description</span>
+                Documentation
+            </a>
             <a href="/auth/logout" class="btn btn-text">Logout</a>
         </div>
     </header>
@@ -662,6 +666,7 @@
                 loadVersions();
                 loadUserGroups();
                 loadUserPermissions();
+                loadConfig();
                 connectWebSocket();
                 loadClusters();
                 startAutoRefresh(); // Start periodic refresh as fallback
@@ -691,6 +696,25 @@
                 })
                 .catch(error => {
                     console.error('Error loading user info:', error);
+                });
+        }
+
+        // Load configuration
+        function loadConfig() {
+            fetch('/api/config', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(config => {
+                    // Show docs link if configured
+                    if (config.docsUrl) {
+                        const docsLink = document.getElementById('docsLink');
+                        docsLink.href = config.docsUrl;
+                        docsLink.style.display = 'inline-flex';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading config:', error);
                 });
         }
 
@@ -866,13 +890,6 @@
                                class="btn btn-filled btn-small">
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
-                            </a>
-                            <a href="https://documentation.${cluster.name}.${cluster.domain}"
-                               target="_blank"
-                               rel="noopener noreferrer"
-                               class="btn btn-filled btn-small">
-                                <span class="material-symbols-outlined" style="margin-right: 4px;">description</span>
-                                Docs
                             </a>
                             ${canDeleteCluster(cluster) ? `
                                 <button class="btn danger btn-small" onclick="openDeleteModal('${cluster.name}', '${cluster.namespace}')">

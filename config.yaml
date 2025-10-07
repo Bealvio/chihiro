@@ -21,6 +21,9 @@ redis:
 # host: '0.0.0.0'             # CHIHIRO_HOST (default: 0.0.0.0)
 # port: 8080                  # CHIHIRO_PORT (default: 8080)
 
+# Documentation URL (optional) - CHIHIRO_DOCS_URL
+docs_url: 'https://doc.bealv.io'
+
 # Cluster Management Configuration
 cluster:
   domain: 'bealv.io'          # CHIHIRO_CLUSTER_DOMAIN
