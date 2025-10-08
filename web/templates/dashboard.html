@@ -746,8 +746,9 @@
             ws.onclose = function() {
                 console.log('WebSocket disconnected');
                 updateConnectionStatus(false);
-                setTimeout(connectWebSocket, reconnectInterval);
-                reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+
+                // Check if session is still valid before reconnecting
+                checkSessionAndReconnect();
             };
 
             ws.onerror = function(error) {
@@ -765,6 +766,35 @@
                 statusEl.className = 'status-indicator disconnected';
                 statusEl.innerHTML = '<span class="material-symbols-outlined">cloud_off</span><span>Disconnected</span>';
             }
+        }
+
+        function checkSessionAndReconnect() {
+            // Try to fetch user info to check if session is still valid
+            fetch('/api/user', {
+                credentials: 'include'
+            })
+            .then(response => {
+                if (response.status === 401 || response.status === 403) {
+                    // Session expired, redirect to login
+                    console.log('Session expired, redirecting to login...');
+                    window.location.reload();
+                } else if (response.ok) {
+                    // Session is valid, continue reconnecting
+                    console.log('Session valid, attempting to reconnect WebSocket...');
+                    setTimeout(connectWebSocket, reconnectInterval);
+                    reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+                } else {
+                    // Other error, try reconnecting anyway
+                    setTimeout(connectWebSocket, reconnectInterval);
+                    reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+                }
+            })
+            .catch(error => {
+                console.error('Error checking session:', error);
+                // Network error, try reconnecting
+                setTimeout(connectWebSocket, reconnectInterval);
+                reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+            });
         }
 
         // Auto-refresh functionality
@@ -799,10 +829,19 @@
             fetch('/api/clusters', {
                 credentials: 'include'  // Include cookies for authentication
             })
-                .then(response => response.json())
+                .then(response => {
+                    if (response.status === 401 || response.status === 403) {
+                        console.log('Session expired while loading clusters, reloading page...');
+                        window.location.reload();
+                        return;
+                    }
+                    return response.json();
+                })
                 .then(clusters => {
-                    updateClusters(clusters);
-                    updateStats(clusters);
+                    if (clusters) {
+                        updateClusters(clusters);
+                        updateStats(clusters);
+                    }
                 })
                 .catch(error => {
                     console.error('Error loading clusters:', error);

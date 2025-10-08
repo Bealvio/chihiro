@@ -15,7 +15,7 @@ redis:
   addr: 'localhost:6379'      # CHIHIRO_REDIS_ADDR
   username: ''                # CHIHIRO_REDIS_USERNAME
   # password: ''              # CHIHIRO_REDIS_PASSWORD (use env var for security)
-  session_ttl: 3600           # CHIHIRO_SESSION_TTL (seconds, default: 3600)
+  session_ttl: 5           # CHIHIRO_SESSION_TTL (seconds, default: 3600)
 
 # Server Configuration
 # host: '0.0.0.0'             # CHIHIRO_HOST (default: 0.0.0.0)
