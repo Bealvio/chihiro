@@ -162,19 +162,17 @@ func runServer() {
 	if env := os.Getenv("CHIHIRO_OIDC_CLIENT_SECRET"); env != "" {
 		authConfig.ClientSecret = env
 	}
-	if env := os.Getenv("CHIHIRO_OIDC_REDIRECT_URL"); env != "" {
-		authConfig.RedirectURL = env
-	}
 	if env := os.Getenv("CHIHIRO_SESSION_KEY"); env != "" {
 		authConfig.SessionKey = env
 	}
 
-	// Set default redirect URL if not provided
+	// Set a placeholder redirect URL - will be dynamically determined from request headers
+	// This is just used during OIDC provider initialization, actual redirect URL is determined per-request
 	if authConfig.RedirectURL == "" {
-		authConfig.RedirectURL = fmt.Sprintf("http://%s:%d/auth/callback", host, port)
+		authConfig.RedirectURL = "http://localhost:8080/auth/callback"
 	}
 
-	slog.Info("OIDC configuration", "issuer_url", authConfig.IssuerURL, "client_id", authConfig.ClientID, "redirect_url", authConfig.RedirectURL)
+	slog.Info("OIDC configuration", "issuer_url", authConfig.IssuerURL, "client_id", authConfig.ClientID, "note", "redirect_url will be dynamically determined from request headers")
 
 	// Validate OIDC configuration
 	if authConfig.IssuerURL == "" || authConfig.ClientID == "" || authConfig.ClientSecret == "" {

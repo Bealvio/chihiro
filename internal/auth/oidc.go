@@ -73,14 +73,29 @@ func NewOIDCProvider(config *Config, sessionStore sessions.Store) (*OIDCProvider
 	}, nil
 }
 
-func (p *OIDCProvider) GetLoginURL(state string) string {
-	return p.oauth2Config.AuthCodeURL(state)
+func (p *OIDCProvider) GetLoginURL(state string, redirectURL string) string {
+	// Create a copy of the config with the dynamic redirect URL
+	config := *p.oauth2Config
+	if redirectURL != "" {
+		config.RedirectURL = redirectURL
+	}
+	return config.AuthCodeURL(state)
 }
 
-func (p *OIDCProvider) HandleCallback(ctx context.Context, code, state string) (*UserInfo, error) {
+// GetOAuth2Config returns the oauth2 config (used for token exchange with potential dynamic redirect URL)
+func (p *OIDCProvider) GetOAuth2Config(redirectURL string) *oauth2.Config {
+	config := *p.oauth2Config
+	if redirectURL != "" {
+		config.RedirectURL = redirectURL
+	}
+	return &config
+}
+
+func (p *OIDCProvider) HandleCallback(ctx context.Context, code, state, redirectURL string) (*UserInfo, error) {
 	slog.Debug("Handling OAuth callback", "state", state)
 
-	token, err := p.oauth2Config.Exchange(ctx, code)
+	oauth2Config := p.GetOAuth2Config(redirectURL)
+	token, err := oauth2Config.Exchange(ctx, code)
 	if err != nil {
 		slog.Error("Failed to exchange OAuth code for token", "error", err)
 		return nil, fmt.Errorf("authentication failed")

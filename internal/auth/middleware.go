@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -125,6 +126,30 @@ func ParseClusterGroups(annotations map[string]interface{}) []string {
 	return result
 }
 
+// getRedirectURLFromRequest constructs the redirect URL based on the incoming request
+func getRedirectURLFromRequest(r *http.Request) string {
+	// Get the host from the request
+	// Try X-Forwarded-Host first (for proxied requests), then Host header
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+
+	// Determine the scheme
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	// Check X-Forwarded-Proto header for proxied requests
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	}
+
+	redirectURL := fmt.Sprintf("%s://%s/auth/callback", scheme, host)
+	slog.Debug("Constructed redirect URL from request", "redirect_url", redirectURL, "host", host, "scheme", scheme)
+	return redirectURL
+}
+
 // HandleLogin initiates OIDC login flow
 func (m *Middleware) HandleLogin(c *gin.Context) {
 	slog.Info("Initiating OIDC login flow", "remote_addr", c.ClientIP(), "user_agent", c.Request.Header.Get("User-Agent"))
@@ -136,7 +161,10 @@ func (m *Middleware) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	// Store state in session for verification
+	// Construct redirect URL from the incoming request
+	redirectURL := getRedirectURLFromRequest(c.Request)
+
+	// Store state and redirect URL in session for verification
 	session, err := m.provider.store.Get(c.Request, "cluster-watcher-session")
 	if err != nil {
 		slog.Debug("Failed to get session for OAuth (creating new session)", "error", err)
@@ -151,14 +179,15 @@ func (m *Middleware) HandleLogin(c *gin.Context) {
 
 	session.Values["oauth_state"] = state
 	session.Values["oauth_state_time"] = time.Now().Unix()
+	session.Values["oauth_redirect_url"] = redirectURL
 	if err := session.Save(c.Request, c.Writer); err != nil {
 		slog.Error("Failed to save session with OAuth state", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
-	loginURL := m.provider.GetLoginURL(state)
-	slog.Debug("Redirecting to OIDC provider", "login_url", loginURL, "state", state, "remote_addr", c.ClientIP())
+	loginURL := m.provider.GetLoginURL(state, redirectURL)
+	slog.Debug("Redirecting to OIDC provider", "login_url", loginURL, "state", state, "redirect_url", redirectURL, "remote_addr", c.ClientIP())
 	c.Redirect(http.StatusFound, loginURL)
 }
 
@@ -205,8 +234,18 @@ func (m *Middleware) HandleCallback(c *gin.Context) {
 		return
 	}
 
+	// Get redirect URL from session (or reconstruct if not found)
+	redirectURL := ""
+	if storedRedirectURL, ok := session.Values["oauth_redirect_url"].(string); ok {
+		redirectURL = storedRedirectURL
+	} else {
+		// Fallback: reconstruct from current request in case session was lost
+		redirectURL = getRedirectURLFromRequest(c.Request)
+		slog.Warn("Redirect URL not found in session, reconstructing from request", "redirect_url", redirectURL)
+	}
+
 	// Exchange code for tokens
-	user, err := m.provider.HandleCallback(c.Request.Context(), code, state)
+	user, err := m.provider.HandleCallback(c.Request.Context(), code, state, redirectURL)
 	if err != nil {
 		slog.Error("Failed to handle OAuth callback", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication failed"})
