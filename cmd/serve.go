@@ -140,7 +140,7 @@ func runServer() {
 		os.Exit(1)
 	}
 
-	clusterManager := cluster.NewManager(clusterWatcher.GetClient())
+	clusterManager := cluster.NewManager(clusterWatcher.GetClient(), clusterWatcher.GetClusterGVR())
 
 	// Setup server configuration with environment variable overrides
 	host := getEnvOrConfig("CHIHIRO_HOST", "host", "0.0.0.0")

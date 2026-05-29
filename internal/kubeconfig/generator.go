@@ -9,14 +9,15 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/Bealvio/chihiro/internal/capi"
 	"github.com/Bealvio/chihiro/internal/watcher"
 )
 
 type Generator struct {
-	client dynamic.Interface
+	client   dynamic.Interface
+	resolver *capi.Resolver
 }
 
 type OIDCConfig struct {
@@ -35,10 +36,11 @@ type KubeconfigData struct {
 	OIDCConfig      *OIDCConfig
 }
 
-func NewGenerator(client dynamic.Interface) *Generator {
+func NewGenerator(client dynamic.Interface, resolver *capi.Resolver) *Generator {
 	slog.Info("Initializing kubeconfig generator")
 	return &Generator{
-		client: client,
+		client:   client,
+		resolver: resolver,
 	}
 }
 
@@ -125,10 +127,10 @@ func (g *Generator) getKamajiControlPlane(ctx context.Context, cluster *watcher.
 	}
 
 	// Look for controlPlaneRef in cluster spec via the stored cluster object
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
+	gvr, err := g.resolver.ClusterGVR()
+	if err != nil {
+		slog.Error("Failed to resolve Cluster API version", "cluster_name", cluster.Name, "error", err)
+		return nil, fmt.Errorf("failed to resolve Cluster API version: %v", err)
 	}
 
 	clusterObj, err := g.client.Resource(gvr).Namespace(cluster.Namespace).Get(ctx, cluster.Name, metav1.GetOptions{})
@@ -164,10 +166,10 @@ func (g *Generator) getKamajiControlPlane(ctx context.Context, cluster *watcher.
 	}
 
 	// Get Kamaji control plane
-	kamajiGVR := schema.GroupVersionResource{
-		Group:    "controlplane.cluster.x-k8s.io",
-		Version:  "v1alpha1",
-		Resource: "kamajicontrolplanes",
+	kamajiGVR, err := g.resolver.KamajiControlPlaneGVR()
+	if err != nil {
+		slog.Error("Failed to resolve Kamaji control plane version", "cluster_name", cluster.Name, "error", err)
+		return nil, fmt.Errorf("failed to resolve Kamaji control plane version: %v", err)
 	}
 
 	kamajiCP, err := g.client.Resource(kamajiGVR).Namespace(cpNamespace).Get(ctx, cpName, metav1.GetOptions{})

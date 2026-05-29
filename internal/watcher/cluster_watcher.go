@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Bealvio/chihiro/internal/capi"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/viper"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +51,8 @@ type ClusterInfo struct {
 
 type ClusterWatcher struct {
 	client      dynamic.Interface
+	resolver    *capi.Resolver
+	clusterGVR  schema.GroupVersionResource
 	clusters    map[string]*ClusterInfo
 	mutex       sync.RWMutex
 	clients     map[*websocket.Conn]*UserWebSocketClient
@@ -81,6 +84,18 @@ func NewClusterWatcher(kubeconfig string) (*ClusterWatcher, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
 	}
 
+	// Resolve the served Cluster API version via discovery so we don't break
+	// when the management cluster's CAPI is upgraded (e.g. v1beta1 -> v1beta2).
+	resolver, err := capi.NewResolver(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CAPI version resolver: %v", err)
+	}
+
+	clusterGVR, err := resolver.ClusterGVR()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Cluster API version: %v", err)
+	}
+
 	// Load admin groups from config
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
 	if len(adminGroups) == 0 {
@@ -92,6 +107,8 @@ func NewClusterWatcher(kubeconfig string) (*ClusterWatcher, error) {
 
 	return &ClusterWatcher{
 		client:      client,
+		resolver:    resolver,
+		clusterGVR:  clusterGVR,
 		clusters:    make(map[string]*ClusterInfo),
 		clients:     make(map[*websocket.Conn]*UserWebSocketClient),
 		adminGroups: adminGroups,
@@ -135,11 +152,7 @@ func (cw *ClusterWatcher) Start(ctx context.Context) {
 }
 
 func (cw *ClusterWatcher) loadInitialClusters(ctx context.Context) {
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := cw.clusterGVR
 
 	// Load clusters managed by chihiro
 	list, err := cw.client.Resource(gvr).List(ctx, metav1.ListOptions{
@@ -163,11 +176,7 @@ func (cw *ClusterWatcher) loadInitialClusters(ctx context.Context) {
 }
 
 func (cw *ClusterWatcher) watchClusters(ctx context.Context) {
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := cw.clusterGVR
 
 	for {
 		select {
@@ -701,17 +710,24 @@ func (cw *ClusterWatcher) GetClient() dynamic.Interface {
 	return cw.client
 }
 
+// GetResolver returns the CAPI version resolver used to discover served API
+// versions at runtime.
+func (cw *ClusterWatcher) GetResolver() *capi.Resolver {
+	return cw.resolver
+}
+
+// GetClusterGVR returns the resolved GroupVersionResource for core CAPI clusters.
+func (cw *ClusterWatcher) GetClusterGVR() schema.GroupVersionResource {
+	return cw.clusterGVR
+}
+
 // RefreshAndBroadcast forces an immediate refresh of the cluster list from Kubernetes
 // and broadcasts the update to all connected WebSocket clients.
 // This is useful after create/delete operations to ensure clients see changes immediately.
 func (cw *ClusterWatcher) RefreshAndBroadcast(ctx context.Context) {
 	slog.Debug("Forcing cluster list refresh and broadcast")
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := cw.clusterGVR
 
 	// Fetch latest clusters from Kubernetes
 	list, err := cw.client.Resource(gvr).List(ctx, metav1.ListOptions{

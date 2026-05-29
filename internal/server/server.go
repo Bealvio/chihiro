@@ -41,7 +41,7 @@ func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *au
 		gin.DefaultErrorWriter = io.Discard
 	}
 
-	kubeconfigGen := kubeconfig.NewGenerator(w.GetClient())
+	kubeconfigGen := kubeconfig.NewGenerator(w.GetClient(), w.GetResolver())
 
 	s := &Server{
 		watcher:       w,

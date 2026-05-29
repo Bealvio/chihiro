@@ -31,13 +31,15 @@ type CreateClusterRequest struct {
 }
 
 type Manager struct {
-	client dynamic.Interface
+	client     dynamic.Interface
+	clusterGVR schema.GroupVersionResource
 }
 
-func NewManager(client dynamic.Interface) *Manager {
-	slog.Info("Initializing cluster manager")
+func NewManager(client dynamic.Interface, clusterGVR schema.GroupVersionResource) *Manager {
+	slog.Info("Initializing cluster manager", "clusterGVR", clusterGVR.String())
 	return &Manager{
-		client: client,
+		client:     client,
+		clusterGVR: clusterGVR,
 	}
 }
 
@@ -45,11 +47,7 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 	slog.Debug("Looking for next available IP range")
 
 	// Get all existing clusters
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	list, err := m.client.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -135,11 +133,7 @@ func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes int
 	}
 
 	// Get current cluster count and total nodes (only Chihiro-managed clusters)
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	// Filter to only Chihiro-managed clusters
 	list, err := m.client.Resource(gvr).List(ctx, metav1.ListOptions{
@@ -288,11 +282,13 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 
 	slog.Debug("Added Chihiro management labels and annotations", "cluster_name", req.Name)
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
+
+	// Force the apiVersion to the version the API server actually serves so the
+	// request body matches the REST endpoint (the template may pin an older
+	// version such as v1beta1 that the cluster no longer serves).
+	cluster.SetAPIVersion(gvr.GroupVersion().String())
+	cluster.SetKind("Cluster")
 
 	namespace := cluster.GetNamespace()
 	if namespace == "" {
@@ -312,11 +308,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 func (m *Manager) DeleteCluster(ctx context.Context, name, namespace string) error {
 	slog.Debug("Starting cluster deletion", "cluster_name", name, "namespace", namespace)
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	err := m.client.Resource(gvr).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
@@ -332,11 +324,7 @@ func (m *Manager) DeleteCluster(ctx context.Context, name, namespace string) err
 func (m *Manager) UpdateClusterGroups(ctx context.Context, clusterName, namespace, groups string) error {
 	slog.Debug("Updating cluster groups", "cluster", clusterName, "namespace", namespace, "groups", groups)
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	// Get the current cluster
 	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
@@ -380,11 +368,7 @@ func (m *Manager) ValidateNodeCountUpdate(ctx context.Context, clusterName, name
 	}
 
 	// Get current cluster to find its current node count
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
 	if err != nil {
@@ -464,11 +448,7 @@ func (m *Manager) UpdateClusterNodeCount(ctx context.Context, clusterName, names
 		return err
 	}
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
 	if err != nil {
@@ -525,11 +505,7 @@ func (m *Manager) ValidateVersionUpgrade(ctx context.Context, clusterName, names
 	}
 
 	// Get current cluster version
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
 	if err != nil {
@@ -609,11 +585,7 @@ func (m *Manager) UpdateClusterVersion(ctx context.Context, clusterName, namespa
 		return err
 	}
 
-	gvr := schema.GroupVersionResource{
-		Group:    "cluster.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "clusters",
-	}
+	gvr := m.clusterGVR
 
 	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
 	if err != nil {
