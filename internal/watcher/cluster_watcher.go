@@ -285,16 +285,9 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 	clusterInfo.Domain = domain
 
-	// Fallback: construct endpoint using cluster name pattern if not found in status
-	if clusterInfo.APIEndpoint == "" {
-		port := viper.GetInt("cluster.port")
-		if port == 0 {
-			port = 443 // Default port
-		}
-
-		clusterInfo.APIEndpoint = fmt.Sprintf("https://kube.%s.%s:%d", clusterInfo.Name, domain, port)
-		slog.Info("Constructed cluster API endpoint", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint, "domain", domain, "port", port)
-	}
+	// chihiro does not construct the API endpoint — it is the infrastructure
+	// provider's responsibility. If controlPlaneEndpoint is absent the cluster
+	// simply has no reachable endpoint yet.
 
 	if conditions, ok := status["conditions"].([]interface{}); ok {
 		for _, condition := range conditions {

@@ -8,6 +8,7 @@ package capi
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -17,8 +18,7 @@ import (
 
 // Well-known Cluster API groups.
 const (
-	GroupCore         = "cluster.x-k8s.io"
-	GroupControlPlane = "controlplane.cluster.x-k8s.io"
+	GroupCore = "cluster.x-k8s.io"
 )
 
 // Resolver discovers and caches the preferred served version for a given
@@ -168,7 +168,55 @@ func (r *Resolver) ClusterGVR() (schema.GroupVersionResource, error) {
 	return r.GVRFor(GroupCore, "clusters", "v1beta1")
 }
 
-// KamajiControlPlaneGVR resolves the GVR for the Kamaji control plane resource.
-func (r *Resolver) KamajiControlPlaneGVR() (schema.GroupVersionResource, error) {
-	return r.GVRFor(GroupControlPlane, "kamajicontrolplanes", "v1alpha1")
+// GVRForKind resolves the GroupVersionResource for an object identified by its
+// apiVersion and kind, as found in an ObjectReference (e.g. a Cluster's
+// spec.controlPlaneRef). It discovers the resource (plural) name from the API
+// server so chihiro stays agnostic to which provider implements the resource.
+//
+// This is how chihiro resolves the control plane without hardcoding any
+// specific provider (Kamaji, kubeadm, etc.): the Cluster's controlPlaneRef
+// already declares the apiVersion and kind to follow.
+func (r *Resolver) GVRForKind(apiVersion, kind string) (schema.GroupVersionResource, error) {
+	if apiVersion == "" || kind == "" {
+		return schema.GroupVersionResource{}, fmt.Errorf("apiVersion and kind are required to resolve a GVR (apiVersion: %q, kind: %q)", apiVersion, kind)
+	}
+
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("failed to parse apiVersion %q: %w", apiVersion, err)
+	}
+
+	key := cacheKey(gv.String(), kind)
+
+	r.mu.RLock()
+	if gvr, ok := r.cache[key]; ok {
+		r.mu.RUnlock()
+		return gvr, nil
+	}
+	r.mu.RUnlock()
+
+	resources, err := r.disco.ServerResourcesForGroupVersion(gv.String())
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("failed to discover resources for %q: %w", gv.String(), err)
+	}
+
+	for _, res := range resources.APIResources {
+		// Skip subresources (e.g. "kamajicontrolplanes/status").
+		if strings.Contains(res.Name, "/") {
+			continue
+		}
+		if res.Kind != kind {
+			continue
+		}
+		gvr := gv.WithResource(res.Name)
+		slog.Info("Resolved control plane resource from ref",
+			"apiVersion", apiVersion, "kind", kind, "resource", res.Name)
+
+		r.mu.Lock()
+		r.cache[key] = gvr
+		r.mu.Unlock()
+		return gvr, nil
+	}
+
+	return schema.GroupVersionResource{}, fmt.Errorf("kind %q not found in group version %q", kind, gv.String())
 }
