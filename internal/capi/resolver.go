@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
@@ -18,16 +20,31 @@ import (
 
 // Well-known Cluster API groups.
 const (
-	GroupCore = "cluster.x-k8s.io"
+	GroupCore         = "cluster.x-k8s.io"
+	GroupControlPlane = "controlplane.cluster.x-k8s.io"
 )
 
+// defaultCacheTTL is how long a resolved GVR stays cached before it is
+// re-discovered. This bounds staleness if the management cluster's CAPI is
+// upgraded at runtime (e.g. an older served version is dropped), without
+// hitting discovery on every call.
+const defaultCacheTTL = 10 * time.Minute
+
+type cacheEntry struct {
+	gvr      schema.GroupVersionResource
+	cachedAt time.Time
+}
+
 // Resolver discovers and caches the preferred served version for a given
-// (group, resource) pair using the API server's discovery endpoint.
+// (group, resource) pair using the API server's discovery endpoint. Cached
+// entries expire after ttl so runtime CAPI upgrades are eventually picked up.
 type Resolver struct {
 	disco discovery.DiscoveryInterface
+	ttl   time.Duration
+	now   func() time.Time // injectable clock for tests
 
 	mu    sync.RWMutex
-	cache map[string]schema.GroupVersionResource // key: group/resource
+	cache map[string]cacheEntry // key: group/resource
 }
 
 // NewResolver builds a Resolver from a rest.Config.
@@ -36,19 +53,47 @@ func NewResolver(config *rest.Config) (*Resolver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create discovery client: %w", err)
 	}
-	return &Resolver{
-		disco: dc,
-		cache: make(map[string]schema.GroupVersionResource),
-	}, nil
+	return newResolver(dc), nil
 }
 
 // NewResolverWithDiscovery builds a Resolver from an existing discovery client.
 // Useful for testing.
 func NewResolverWithDiscovery(dc discovery.DiscoveryInterface) *Resolver {
+	return newResolver(dc)
+}
+
+func newResolver(dc discovery.DiscoveryInterface) *Resolver {
 	return &Resolver{
 		disco: dc,
-		cache: make(map[string]schema.GroupVersionResource),
+		ttl:   defaultCacheTTL,
+		now:   time.Now,
+		cache: make(map[string]cacheEntry),
 	}
+}
+
+// Invalidate clears all cached GVRs, forcing re-discovery on the next lookup.
+func (r *Resolver) Invalidate() {
+	r.mu.Lock()
+	r.cache = make(map[string]cacheEntry)
+	r.mu.Unlock()
+}
+
+// getCached returns a cached GVR if present and not expired.
+func (r *Resolver) getCached(key string) (schema.GroupVersionResource, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.cache[key]
+	if !ok || r.now().Sub(entry.cachedAt) >= r.ttl {
+		return schema.GroupVersionResource{}, false
+	}
+	return entry.gvr, true
+}
+
+// setCached stores a GVR with the current timestamp.
+func (r *Resolver) setCached(key string, gvr schema.GroupVersionResource) {
+	r.mu.Lock()
+	r.cache[key] = cacheEntry{gvr: gvr, cachedAt: r.now()}
+	r.mu.Unlock()
 }
 
 func cacheKey(group, resource string) string {
@@ -65,22 +110,16 @@ func cacheKey(group, resource string) string {
 func (r *Resolver) GVRFor(group, resource, fallbackVersion string) (schema.GroupVersionResource, error) {
 	key := cacheKey(group, resource)
 
-	r.mu.RLock()
-	if gvr, ok := r.cache[key]; ok {
-		r.mu.RUnlock()
+	if gvr, ok := r.getCached(key); ok {
 		return gvr, nil
 	}
-	r.mu.RUnlock()
 
 	gvr, err := r.resolve(group, resource, fallbackVersion)
 	if err != nil {
 		return schema.GroupVersionResource{}, err
 	}
 
-	r.mu.Lock()
-	r.cache[key] = gvr
-	r.mu.Unlock()
-
+	r.setCached(key, gvr)
 	return gvr, nil
 }
 
@@ -188,12 +227,9 @@ func (r *Resolver) GVRForKind(apiVersion, kind string) (schema.GroupVersionResou
 
 	key := cacheKey(gv.String(), kind)
 
-	r.mu.RLock()
-	if gvr, ok := r.cache[key]; ok {
-		r.mu.RUnlock()
+	if gvr, ok := r.getCached(key); ok {
 		return gvr, nil
 	}
-	r.mu.RUnlock()
 
 	resources, err := r.disco.ServerResourcesForGroupVersion(gv.String())
 	if err != nil {
@@ -212,11 +248,77 @@ func (r *Resolver) GVRForKind(apiVersion, kind string) (schema.GroupVersionResou
 		slog.Info("Resolved control plane resource from ref",
 			"apiVersion", apiVersion, "kind", kind, "resource", res.Name)
 
-		r.mu.Lock()
-		r.cache[key] = gvr
-		r.mu.Unlock()
+		r.setCached(key, gvr)
 		return gvr, nil
 	}
 
 	return schema.GroupVersionResource{}, fmt.Errorf("kind %q not found in group version %q", kind, gv.String())
+}
+
+// GVRForControlPlaneKind resolves the GVR for a control plane resource by kind
+// alone, discovering both the group version and plural resource name from the
+// API server. Use this when the controlPlaneRef omits apiVersion.
+func (r *Resolver) GVRForControlPlaneKind(kind string) (schema.GroupVersionResource, error) {
+	if kind == "" {
+		return schema.GroupVersionResource{}, fmt.Errorf("kind is required to resolve a control plane GVR")
+	}
+
+	key := cacheKey(GroupControlPlane, kind)
+
+	if gvr, ok := r.getCached(key); ok {
+		return gvr, nil
+	}
+
+	// Find which version of the control plane group serves this kind.
+	groups, err := r.disco.ServerGroups()
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("failed to discover server groups: %w", err)
+	}
+
+	var cpGroup *metav1.APIGroup
+	for i := range groups.Groups {
+		if groups.Groups[i].Name == GroupControlPlane {
+			cpGroup = &groups.Groups[i]
+			break
+		}
+	}
+	if cpGroup == nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("control plane group %q not found in API discovery", GroupControlPlane)
+	}
+
+	// Try the preferred version first, then all served versions.
+	candidates := []string{cpGroup.PreferredVersion.Version}
+	for _, v := range cpGroup.Versions {
+		candidates = append(candidates, v.Version)
+	}
+	seen := make(map[string]bool, len(candidates))
+	for _, version := range candidates {
+		if version == "" || seen[version] {
+			continue
+		}
+		seen[version] = true
+
+		gvStr := schema.GroupVersion{Group: GroupControlPlane, Version: version}.String()
+		resources, err := r.disco.ServerResourcesForGroupVersion(gvStr)
+		if err != nil {
+			slog.Debug("Failed to discover resources for control plane group version", "groupVersion", gvStr, "error", err)
+			continue
+		}
+		for _, res := range resources.APIResources {
+			if strings.Contains(res.Name, "/") {
+				continue
+			}
+			if res.Kind != kind {
+				continue
+			}
+			gvr := schema.GroupVersionResource{Group: GroupControlPlane, Version: version, Resource: res.Name}
+			slog.Info("Resolved control plane resource by kind",
+				"kind", kind, "groupVersion", gvStr, "resource", res.Name)
+
+			r.setCached(key, gvr)
+			return gvr, nil
+		}
+	}
+
+	return schema.GroupVersionResource{}, fmt.Errorf("kind %q not found in control plane group %q", kind, GroupControlPlane)
 }

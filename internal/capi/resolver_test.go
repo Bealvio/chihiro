@@ -2,8 +2,10 @@ package capi
 
 import (
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
@@ -146,5 +148,98 @@ func TestGVRFor_Caches(t *testing.T) {
 	r.mu.RUnlock()
 	if !cached {
 		t.Fatal("expected result to be cached")
+	}
+}
+
+func controlPlaneResourceList(version, kind, resource string) *metav1.APIResourceList {
+	return &metav1.APIResourceList{
+		GroupVersion: GroupControlPlane + "/" + version,
+		APIResources: []metav1.APIResource{
+			{Name: resource + "/status", Namespaced: true, Kind: kind},
+			{Name: resource, Namespaced: true, Kind: kind},
+		},
+	}
+}
+
+func TestGVRForControlPlaneKind_ResolvesByKind(t *testing.T) {
+	groups := []*metav1.APIGroup{
+		{
+			Name: GroupControlPlane,
+			Versions: []metav1.GroupVersionForDiscovery{
+				{GroupVersion: GroupControlPlane + "/v1alpha1", Version: "v1alpha1"},
+			},
+			PreferredVersion: metav1.GroupVersionForDiscovery{
+				GroupVersion: GroupControlPlane + "/v1alpha1", Version: "v1alpha1",
+			},
+		},
+	}
+	resources := []*metav1.APIResourceList{
+		controlPlaneResourceList("v1alpha1", "KamajiControlPlane", "kamajicontrolplanes"),
+	}
+
+	r := NewResolverWithDiscovery(newFakeDiscovery(t, groups, resources))
+	gvr, err := r.GVRForControlPlaneKind("KamajiControlPlane")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := schema.GroupVersionResource{Group: GroupControlPlane, Version: "v1alpha1", Resource: "kamajicontrolplanes"}
+	if gvr != want {
+		t.Fatalf("expected %+v, got %+v", want, gvr)
+	}
+}
+
+func TestGVRForControlPlaneKind_ErrorsWhenGroupAbsent(t *testing.T) {
+	r := NewResolverWithDiscovery(newFakeDiscovery(t, nil, nil))
+	if _, err := r.GVRForControlPlaneKind("KamajiControlPlane"); err == nil {
+		t.Fatal("expected error when control plane group absent")
+	}
+}
+
+func TestGVRForControlPlaneKind_ErrorsWhenKindEmpty(t *testing.T) {
+	r := NewResolverWithDiscovery(newFakeDiscovery(t, nil, nil))
+	if _, err := r.GVRForControlPlaneKind(""); err == nil {
+		t.Fatal("expected error when kind is empty")
+	}
+}
+
+func TestCache_ExpiresAfterTTL(t *testing.T) {
+	now := time.Now()
+	r := NewResolverWithDiscovery(newFakeDiscovery(t, nil, nil))
+	r.now = func() time.Time { return now }
+
+	key := cacheKey(GroupCore, "clusters")
+	gvr := schema.GroupVersionResource{Group: GroupCore, Version: "v1beta2", Resource: "clusters"}
+	r.setCached(key, gvr)
+
+	if _, ok := r.getCached(key); !ok {
+		t.Fatal("expected fresh entry to be cached")
+	}
+
+	// Advance just before the TTL: still cached.
+	now = now.Add(r.ttl - time.Second)
+	if _, ok := r.getCached(key); !ok {
+		t.Fatal("expected entry to still be cached before TTL")
+	}
+
+	// Advance past the TTL: expired.
+	now = now.Add(2 * time.Second)
+	if _, ok := r.getCached(key); ok {
+		t.Fatal("expected entry to expire after TTL")
+	}
+}
+
+func TestInvalidate_ClearsCache(t *testing.T) {
+	r := NewResolverWithDiscovery(newFakeDiscovery(t, nil, nil))
+	key := cacheKey(GroupCore, "clusters")
+	r.setCached(key, schema.GroupVersionResource{Group: GroupCore, Version: "v1beta2", Resource: "clusters"})
+
+	if _, ok := r.getCached(key); !ok {
+		t.Fatal("expected entry to be cached")
+	}
+
+	r.Invalidate()
+
+	if _, ok := r.getCached(key); ok {
+		t.Fatal("expected cache to be cleared after Invalidate")
 	}
 }

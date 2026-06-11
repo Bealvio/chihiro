@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/Bealvio/chihiro/internal/capi"
@@ -119,19 +120,16 @@ func (g *Generator) GenerateKubeconfig(
 }
 
 // getControlPlane resolves and fetches the control plane object referenced by
-// the Cluster's spec.controlPlaneRef. The control plane kind and apiVersion are
-// read directly from the ref, so chihiro does not depend on any particular
-// control plane provider (Kamaji, kubeadm, etc.).
+// the Cluster's spec.controlPlaneRef. The control plane kind is read from the
+// ref and the GVR is resolved via discovery (using apiVersion when present),
+// so chihiro does not depend on any particular control plane provider (Kamaji,
+// kubeadm, etc.).
 func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.ClusterInfo) (*unstructured.Unstructured, error) {
 	slog.Debug("Getting control plane for cluster", "cluster_name", cluster.Name, "namespace", cluster.Namespace)
 
-	// Get the control plane reference from cluster spec
-	if cluster.Status == nil {
-		slog.Error("Cluster status is nil", "cluster_name", cluster.Name)
-		return nil, fmt.Errorf("cluster status is nil")
-	}
-
-	// Look for controlPlaneRef in cluster spec via the stored cluster object
+	// Fetch the cluster object fresh and read controlPlaneRef from its spec.
+	// The control plane reference lives in spec (not status), so kubeconfig
+	// generation does not depend on the cluster's status being populated.
 	gvr, err := g.resolver.ClusterGVR()
 	if err != nil {
 		slog.Error("Failed to resolve Cluster API version", "cluster_name", cluster.Name, "error", err)
@@ -168,12 +166,6 @@ func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.Cluste
 		return nil, fmt.Errorf("control plane kind not found in controlPlaneRef")
 	}
 
-	cpAPIVersion, ok := controlPlaneRef["apiVersion"].(string)
-	if !ok || cpAPIVersion == "" {
-		slog.Error("Control plane apiVersion not found in controlPlaneRef", "cluster_name", cluster.Name)
-		return nil, fmt.Errorf("control plane apiVersion not found in controlPlaneRef")
-	}
-
 	cpNamespace, ok := controlPlaneRef["namespace"].(string)
 	if !ok {
 		cpNamespace = cluster.Namespace // Use cluster namespace as fallback
@@ -182,8 +174,17 @@ func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.Cluste
 		slog.Debug("Found control plane namespace", "cluster_name", cluster.Name, "cp_name", cpName, "cp_namespace", cpNamespace)
 	}
 
-	// Resolve the control plane GVR generically from the ref's apiVersion+kind.
-	cpGVR, err := g.resolver.GVRForKind(cpAPIVersion, cpKind)
+	// Resolve the control plane GVR. If apiVersion is present in the ref, use
+	// it directly. Otherwise discover the version from the CAPI control plane
+	// group using only the kind — some CAPI configurations omit apiVersion.
+	cpAPIVersion, _ := controlPlaneRef["apiVersion"].(string)
+
+	var cpGVR schema.GroupVersionResource
+	if cpAPIVersion != "" {
+		cpGVR, err = g.resolver.GVRForKind(cpAPIVersion, cpKind)
+	} else {
+		cpGVR, err = g.resolver.GVRForControlPlaneKind(cpKind)
+	}
 	if err != nil {
 		slog.Error("Failed to resolve control plane resource", "cluster_name", cluster.Name, "cp_kind", cpKind, "cp_api_version", cpAPIVersion, "error", err)
 		return nil, fmt.Errorf("failed to resolve control plane resource: %v", err)
