@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -91,6 +92,30 @@ func (g *Generator) GenerateKubeconfig(
 	}
 
 	clusterSpec, _ := clusterObj.Object["spec"].(map[string]interface{})
+
+	// Retry fetching the cluster object until spec.controlPlaneEndpoint is
+	// available. CAPI populates this field after the infrastructure provider
+	// provisions the load balancer, which may take some time.
+	retryCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	for {
+		if _, ok := clusterSpec["controlPlaneEndpoint"]; ok {
+			break
+		}
+		select {
+		case <-retryCtx.Done():
+			slog.Error("Timed out waiting for control plane endpoint", "cluster_name", cluster.Name)
+			return "", fmt.Errorf("failed to generate kubeconfig: control plane endpoint not available for cluster %q", cluster.Name)
+		case <-time.After(3 * time.Second):
+			slog.Info("Control plane endpoint not yet available, retrying...", "cluster_name", cluster.Name)
+		}
+		clusterObj, err = g.client.Resource(clusterGVR).Namespace(cluster.Namespace).Get(retryCtx, cluster.Name, metav1.GetOptions{})
+		if err != nil {
+			slog.Error("Failed to re-fetch cluster object", "cluster_name", cluster.Name, "error", err)
+			return "", fmt.Errorf("failed to generate kubeconfig")
+		}
+		clusterSpec, _ = clusterObj.Object["spec"].(map[string]interface{})
+	}
 
 	// Get cluster endpoint from cluster spec
 	serverURL, err := g.getClusterEndpoint(cluster, clusterSpec, controlPlane)
@@ -358,13 +383,6 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 				}
 			}
 		}
-	}
-
-	// 5. Last resort: construct a DNS endpoint from the cluster domain.
-	if cluster.Domain != "" {
-		endpoint := fmt.Sprintf("https://api.%s.%s.%s", cluster.Name, cluster.Namespace, cluster.Domain)
-		slog.Info("Constructing endpoint from cluster domain", "cluster_name", cluster.Name, "endpoint", endpoint)
-		return endpoint, nil
 	}
 
 	slog.Error("No control plane endpoint available for cluster", "cluster_name", cluster.Name)

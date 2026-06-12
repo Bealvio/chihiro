@@ -263,7 +263,8 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		clusterInfo.Phase = phase
 	}
 
-	// Parse control plane endpoint
+	// Parse control plane endpoint from status (populated by the
+	// infrastructure provider once the load balancer is provisioned).
 	if controlPlaneEndpoint, ok := status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 		slog.Debug("Found controlPlaneEndpoint in status", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
 		if host, ok := controlPlaneEndpoint["host"].(string); ok {
@@ -278,16 +279,31 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
+	// Fallback: parse control plane endpoint from spec. CAPI sets
+	// spec.controlPlaneEndpoint at creation time when the endpoint is
+	// already known, before the infrastructure provider reports it in status.
+	if clusterInfo.APIEndpoint == "" && spec != nil {
+		if controlPlaneEndpoint, ok := spec["controlPlaneEndpoint"].(map[string]interface{}); ok {
+			slog.Debug("Found controlPlaneEndpoint in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
+			if host, ok := controlPlaneEndpoint["host"].(string); ok {
+				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
+					clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%.0f", host, port)
+					slog.Info("Parsed cluster API endpoint from spec", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint)
+				} else {
+					slog.Warn("controlPlaneEndpoint missing port in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
+				}
+			} else {
+				slog.Warn("controlPlaneEndpoint missing host in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
+			}
+		}
+	}
+
 	// Get domain for cluster
 	domain := viper.GetString("cluster.domain")
 	if domain == "" {
 		domain = "bealv.io" // Default domain
 	}
 	clusterInfo.Domain = domain
-
-	// chihiro does not construct the API endpoint — it is the infrastructure
-	// provider's responsibility. If controlPlaneEndpoint is absent the cluster
-	// simply has no reachable endpoint yet.
 
 	if conditions, ok := status["conditions"].([]interface{}); ok {
 		for _, condition := range conditions {
