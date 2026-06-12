@@ -63,9 +63,21 @@ func (g *Generator) GenerateKubeconfig(
 		userGroups,
 	)
 
+	clusterGVR, err := g.resolver.ClusterGVR()
+	if err != nil {
+		slog.Error("Failed to resolve Cluster API version", "cluster_name", cluster.Name, "error", err)
+		return "", fmt.Errorf("failed to resolve Cluster API version: %v", err)
+	}
+
+	clusterObj, err := g.client.Resource(clusterGVR).Namespace(cluster.Namespace).Get(ctx, cluster.Name, metav1.GetOptions{})
+	if err != nil {
+		slog.Error("Failed to get cluster object", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "error", err)
+		return "", fmt.Errorf("failed to get cluster object: %v", err)
+	}
+
 	// Get control plane information (provider-agnostic, resolved from the
 	// Cluster's controlPlaneRef).
-	controlPlane, err := g.getControlPlane(ctx, cluster)
+	controlPlane, err := g.getControlPlane(ctx, clusterObj)
 	if err != nil {
 		slog.Error("Failed to get control plane", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "error", err)
 		return "", fmt.Errorf("failed to generate kubeconfig")
@@ -78,8 +90,10 @@ func (g *Generator) GenerateKubeconfig(
 		return "", fmt.Errorf("failed to generate kubeconfig")
 	}
 
+	clusterSpec, _ := clusterObj.Object["spec"].(map[string]interface{})
+
 	// Get cluster endpoint from cluster spec
-	serverURL, err := g.getClusterEndpoint(cluster)
+	serverURL, err := g.getClusterEndpoint(cluster, clusterSpec, controlPlane)
 	if err != nil {
 		slog.Error("Failed to get cluster endpoint", "cluster_name", cluster.Name, "error", err)
 		return "", fmt.Errorf("failed to generate kubeconfig")
@@ -124,54 +138,39 @@ func (g *Generator) GenerateKubeconfig(
 // ref and the GVR is resolved via discovery (using apiVersion when present),
 // so chihiro does not depend on any particular control plane provider (Kamaji,
 // kubeadm, etc.).
-func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.ClusterInfo) (*unstructured.Unstructured, error) {
-	slog.Debug("Getting control plane for cluster", "cluster_name", cluster.Name, "namespace", cluster.Namespace)
-
-	// Fetch the cluster object fresh and read controlPlaneRef from its spec.
-	// The control plane reference lives in spec (not status), so kubeconfig
-	// generation does not depend on the cluster's status being populated.
-	gvr, err := g.resolver.ClusterGVR()
-	if err != nil {
-		slog.Error("Failed to resolve Cluster API version", "cluster_name", cluster.Name, "error", err)
-		return nil, fmt.Errorf("failed to resolve Cluster API version: %v", err)
-	}
-
-	clusterObj, err := g.client.Resource(gvr).Namespace(cluster.Namespace).Get(ctx, cluster.Name, metav1.GetOptions{})
-	if err != nil {
-		slog.Error("Failed to get cluster object", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "error", err)
-		return nil, fmt.Errorf("failed to get cluster object: %v", err)
-	}
+func (g *Generator) getControlPlane(ctx context.Context, clusterObj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	slog.Debug("Getting control plane for cluster", "cluster_name", clusterObj.GetName(), "namespace", clusterObj.GetNamespace())
 
 	spec, ok := clusterObj.Object["spec"].(map[string]interface{})
 	if !ok {
-		slog.Error("Cluster spec not found or invalid", "cluster_name", cluster.Name)
+		slog.Error("Cluster spec not found or invalid", "cluster_name", clusterObj.GetName())
 		return nil, fmt.Errorf("cluster spec not found")
 	}
 
 	controlPlaneRef, ok := spec["controlPlaneRef"].(map[string]interface{})
 	if !ok {
-		slog.Error("Control plane reference not found in cluster spec", "cluster_name", cluster.Name)
+		slog.Error("Control plane reference not found in cluster spec", "cluster_name", clusterObj.GetName())
 		return nil, fmt.Errorf("controlPlaneRef not found in cluster spec")
 	}
 
 	cpName, ok := controlPlaneRef["name"].(string)
 	if !ok {
-		slog.Error("Control plane name not found", "cluster_name", cluster.Name)
+		slog.Error("Control plane name not found", "cluster_name", clusterObj.GetName())
 		return nil, fmt.Errorf("control plane name not found")
 	}
 
 	cpKind, ok := controlPlaneRef["kind"].(string)
 	if !ok || cpKind == "" {
-		slog.Error("Control plane kind not found in controlPlaneRef", "cluster_name", cluster.Name)
+		slog.Error("Control plane kind not found in controlPlaneRef", "cluster_name", clusterObj.GetName())
 		return nil, fmt.Errorf("control plane kind not found in controlPlaneRef")
 	}
 
 	cpNamespace, ok := controlPlaneRef["namespace"].(string)
 	if !ok {
-		cpNamespace = cluster.Namespace // Use cluster namespace as fallback
-		slog.Debug("Using cluster namespace for control plane", "cluster_name", cluster.Name, "namespace", cpNamespace)
+		cpNamespace = clusterObj.GetNamespace() // Use cluster namespace as fallback
+		slog.Debug("Using cluster namespace for control plane", "cluster_name", clusterObj.GetName(), "namespace", cpNamespace)
 	} else {
-		slog.Debug("Found control plane namespace", "cluster_name", cluster.Name, "cp_name", cpName, "cp_namespace", cpNamespace)
+		slog.Debug("Found control plane namespace", "cluster_name", clusterObj.GetName(), "cp_name", cpName, "cp_namespace", cpNamespace)
 	}
 
 	// Resolve the control plane GVR. If apiVersion is present in the ref, use
@@ -179,14 +178,17 @@ func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.Cluste
 	// group using only the kind — some CAPI configurations omit apiVersion.
 	cpAPIVersion, _ := controlPlaneRef["apiVersion"].(string)
 
-	var cpGVR schema.GroupVersionResource
+	var (
+		cpGVR schema.GroupVersionResource
+		err   error
+	)
 	if cpAPIVersion != "" {
 		cpGVR, err = g.resolver.GVRForKind(cpAPIVersion, cpKind)
 	} else {
 		cpGVR, err = g.resolver.GVRForControlPlaneKind(cpKind)
 	}
 	if err != nil {
-		slog.Error("Failed to resolve control plane resource", "cluster_name", cluster.Name, "cp_kind", cpKind, "cp_api_version", cpAPIVersion, "error", err)
+		slog.Error("Failed to resolve control plane resource", "cluster_name", clusterObj.GetName(), "cp_kind", cpKind, "cp_api_version", cpAPIVersion, "error", err)
 		return nil, fmt.Errorf("failed to resolve control plane resource: %v", err)
 	}
 
@@ -195,7 +197,7 @@ func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.Cluste
 		slog.Error(
 			"Failed to get control plane resource",
 			"cluster_name",
-			cluster.Name,
+			clusterObj.GetName(),
 			"cp_name",
 			cpName,
 			"cp_namespace",
@@ -208,7 +210,7 @@ func (g *Generator) getControlPlane(ctx context.Context, cluster *watcher.Cluste
 		return nil, fmt.Errorf("failed to get control plane: %v", err)
 	}
 
-	slog.Debug("Successfully retrieved control plane", "cluster_name", cluster.Name, "cp_name", cpName, "cp_namespace", cpNamespace, "cp_kind", cpKind)
+	slog.Debug("Successfully retrieved control plane", "cluster_name", clusterObj.GetName(), "cp_name", cpName, "cp_namespace", cpNamespace, "cp_kind", cpKind)
 	return controlPlane, nil
 }
 
@@ -305,27 +307,64 @@ func (g *Generator) extractOIDCConfig(controlPlane *unstructured.Unstructured) (
 	return oidcConfig, nil
 }
 
-func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo) (string, error) {
+func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec map[string]interface{}, controlPlane *unstructured.Unstructured) (string, error) {
 	slog.Debug("Getting cluster endpoint", "cluster_name", cluster.Name)
 
-	// Use the external API server endpoint advertised by CAPI. chihiro does not
-	// construct or guess the host: the control plane endpoint is the source of
-	// truth, populated once the infrastructure provider exposes it.
+	// 1. Check the watcher's APIEndpoint (populated from status.controlPlaneEndpoint in parseCluster).
 	if cluster.APIEndpoint != "" {
-		slog.Debug("Using cluster API endpoint", "cluster_name", cluster.Name, "endpoint", cluster.APIEndpoint)
+		slog.Debug("Using cluster API endpoint from watcher", "cluster_name", cluster.Name, "endpoint", cluster.APIEndpoint)
 		return cluster.APIEndpoint, nil
 	}
 
+	// 2. Check cluster.Status directly (same data as above, but a fresh fetch
+	//    may have populated it since the watcher last synced).
 	if cluster.Status != nil {
 		if controlPlaneEndpoint, ok := cluster.Status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
 				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
 					endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
-					slog.Debug("Found endpoint from cluster status", "cluster_name", cluster.Name, "endpoint", endpoint)
+					slog.Info("Found endpoint from cluster status", "cluster_name", cluster.Name, "endpoint", endpoint)
 					return endpoint, nil
 				}
 			}
 		}
+	}
+
+	// 3. Check spec.controlPlaneEndpoint. CAPI sets this field on the Cluster
+	//    spec when the endpoint is known at creation time.
+	if clusterSpec != nil {
+		if controlPlaneEndpoint, ok := clusterSpec["controlPlaneEndpoint"].(map[string]interface{}); ok {
+			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
+				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
+					endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
+					slog.Info("Found endpoint from cluster spec", "cluster_name", cluster.Name, "endpoint", endpoint)
+					return endpoint, nil
+				}
+			}
+		}
+	}
+
+	// 4. Check the control plane object's status. Some providers (e.g. Kamaji)
+	//    expose the controlPlaneEndpoint on the control plane resource directly.
+	if controlPlane != nil {
+		if status, ok := controlPlane.Object["status"].(map[string]interface{}); ok {
+			if controlPlaneEndpoint, ok := status["controlPlaneEndpoint"].(map[string]interface{}); ok {
+				if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
+					if port, ok := controlPlaneEndpoint["port"].(float64); ok {
+						endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
+						slog.Info("Found endpoint from control plane status", "cluster_name", cluster.Name, "endpoint", endpoint)
+						return endpoint, nil
+					}
+				}
+			}
+		}
+	}
+
+	// 5. Last resort: construct a DNS endpoint from the cluster domain.
+	if cluster.Domain != "" {
+		endpoint := fmt.Sprintf("https://api.%s.%s.%s", cluster.Name, cluster.Namespace, cluster.Domain)
+		slog.Info("Constructing endpoint from cluster domain", "cluster_name", cluster.Name, "endpoint", endpoint)
+		return endpoint, nil
 	}
 
 	slog.Error("No control plane endpoint available for cluster", "cluster_name", cluster.Name)

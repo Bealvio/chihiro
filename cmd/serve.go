@@ -107,6 +107,11 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_nodes", maxNodes)
 		}
 	}
+	if env := os.Getenv("X_TOTAL_CP"); env != "" {
+		if maxCP, err := strconv.Atoi(env); err == nil {
+			viper.Set("cluster.limits.max_total_cp", maxCP)
+		}
+	}
 	if env := os.Getenv("CHIHIRO_MAX_TOTAL_CP"); env != "" {
 		if maxCP, err := strconv.Atoi(env); err == nil {
 			viper.Set("cluster.limits.max_total_cp", maxCP)
