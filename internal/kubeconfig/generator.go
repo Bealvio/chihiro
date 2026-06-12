@@ -99,8 +99,10 @@ func (g *Generator) GenerateKubeconfig(
 	retryCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	for {
-		if _, ok := clusterSpec["controlPlaneEndpoint"]; ok {
-			break
+		if endpoint, ok := clusterSpec["controlPlaneEndpoint"].(map[string]interface{}); ok {
+			if host, _ := endpoint["host"].(string); host != "" {
+				break
+			}
 		}
 		select {
 		case <-retryCtx.Done():

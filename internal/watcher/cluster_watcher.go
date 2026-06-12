@@ -267,7 +267,7 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	// infrastructure provider once the load balancer is provisioned).
 	if controlPlaneEndpoint, ok := status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 		slog.Debug("Found controlPlaneEndpoint in status", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
-		if host, ok := controlPlaneEndpoint["host"].(string); ok {
+		if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
 			if port, ok := controlPlaneEndpoint["port"].(float64); ok {
 				clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%.0f", host, port)
 				slog.Info("Parsed cluster API endpoint from status", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint)
@@ -285,7 +285,7 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	if clusterInfo.APIEndpoint == "" && spec != nil {
 		if controlPlaneEndpoint, ok := spec["controlPlaneEndpoint"].(map[string]interface{}); ok {
 			slog.Debug("Found controlPlaneEndpoint in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
-			if host, ok := controlPlaneEndpoint["host"].(string); ok {
+			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
 				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
 					clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%.0f", host, port)
 					slog.Info("Parsed cluster API endpoint from spec", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint)
