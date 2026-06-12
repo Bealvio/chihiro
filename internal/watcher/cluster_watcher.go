@@ -268,8 +268,9 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	if controlPlaneEndpoint, ok := status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 		slog.Debug("Found controlPlaneEndpoint in status", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
 		if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
-			if port, ok := controlPlaneEndpoint["port"].(float64); ok {
-				clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%.0f", host, port)
+			port := toInt(controlPlaneEndpoint["port"])
+			if port > 0 {
+				clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%d", host, port)
 				slog.Info("Parsed cluster API endpoint from status", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint)
 			} else {
 				slog.Warn("controlPlaneEndpoint missing port", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
@@ -286,8 +287,9 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		if controlPlaneEndpoint, ok := spec["controlPlaneEndpoint"].(map[string]interface{}); ok {
 			slog.Debug("Found controlPlaneEndpoint in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
 			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
-				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
-					clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%.0f", host, port)
+				port := toInt(controlPlaneEndpoint["port"])
+				if port > 0 {
+					clusterInfo.APIEndpoint = fmt.Sprintf("https://%s:%d", host, port)
 					slog.Info("Parsed cluster API endpoint from spec", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint)
 				} else {
 					slog.Warn("controlPlaneEndpoint missing port in spec", "cluster", clusterInfo.Name, "endpoint_data", controlPlaneEndpoint)
@@ -769,4 +771,20 @@ func getKeys(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// toInt extracts an integer from an interface{} that may be float64, int,
+// int64, or json.Number. Returns 0 if the value cannot be converted.
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	}
+	return 0
 }

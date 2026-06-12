@@ -348,8 +348,8 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 	if cluster.Status != nil {
 		if controlPlaneEndpoint, ok := cluster.Status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
-				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
-					endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
+				if port := toInt(controlPlaneEndpoint["port"]); port > 0 {
+					endpoint := fmt.Sprintf("https://%s:%d", host, port)
 					slog.Info("Found endpoint from cluster status", "cluster_name", cluster.Name, "endpoint", endpoint)
 					return endpoint, nil
 				}
@@ -362,8 +362,8 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 	if clusterSpec != nil {
 		if controlPlaneEndpoint, ok := clusterSpec["controlPlaneEndpoint"].(map[string]interface{}); ok {
 			if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
-				if port, ok := controlPlaneEndpoint["port"].(float64); ok {
-					endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
+				if port := toInt(controlPlaneEndpoint["port"]); port > 0 {
+					endpoint := fmt.Sprintf("https://%s:%d", host, port)
 					slog.Info("Found endpoint from cluster spec", "cluster_name", cluster.Name, "endpoint", endpoint)
 					return endpoint, nil
 				}
@@ -377,8 +377,8 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 		if status, ok := controlPlane.Object["status"].(map[string]interface{}); ok {
 			if controlPlaneEndpoint, ok := status["controlPlaneEndpoint"].(map[string]interface{}); ok {
 				if host, ok := controlPlaneEndpoint["host"].(string); ok && host != "" {
-					if port, ok := controlPlaneEndpoint["port"].(float64); ok {
-						endpoint := fmt.Sprintf("https://%s:%.0f", host, port)
+					if port := toInt(controlPlaneEndpoint["port"]); port > 0 {
+						endpoint := fmt.Sprintf("https://%s:%d", host, port)
 						slog.Info("Found endpoint from control plane status", "cluster_name", cluster.Name, "endpoint", endpoint)
 						return endpoint, nil
 					}
@@ -527,4 +527,20 @@ func parseOIDCExtraArgs(extraArgs interface{}, oidc *OIDCConfig) {
 			}
 		}
 	}
+}
+
+// toInt extracts an integer from an interface{} that may be float64, int,
+// int64, or json.Number. Returns 0 if the value cannot be converted.
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	}
+	return 0
 }
