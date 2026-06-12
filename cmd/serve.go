@@ -47,7 +47,7 @@ func runServer() {
 
 	// Create a JSON handler for structured logging
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
+		Level:     logLevel,
 		AddSource: true,
 	})
 	slog.SetDefault(slog.New(handler))
@@ -107,6 +107,11 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_nodes", maxNodes)
 		}
 	}
+	if env := os.Getenv("CHIHIRO_MAX_TOTAL_CP"); env != "" {
+		if maxCP, err := strconv.Atoi(env); err == nil {
+			viper.Set("cluster.limits.max_total_cp", maxCP)
+		}
+	}
 
 	// Log cluster configuration
 	clusterDomain := viper.GetString("cluster.domain")
@@ -116,6 +121,7 @@ func runServer() {
 	availableVersions := viper.GetStringSlice("cluster.available_versions")
 	maxClusters := viper.GetInt("cluster.limits.max_clusters")
 	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
+	maxTotalCP := viper.GetInt("cluster.limits.max_total_cp")
 
 	slog.Info("Cluster configuration",
 		"domain", clusterDomain,
@@ -124,7 +130,8 @@ func runServer() {
 		"creator_groups", creatorGroups,
 		"available_versions", availableVersions,
 		"max_clusters", maxClusters,
-		"max_total_nodes", maxTotalNodes)
+		"max_total_nodes", maxTotalNodes,
+		"max_total_cp", maxTotalCP)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -229,7 +236,7 @@ func runServer() {
 	sessionStore.Options.HttpOnly = true
 	// Only set Secure flag if running on HTTPS
 	// For local development on HTTP, this must be false
-	sessionStore.Options.Secure = false // TODO: Set to true in production with HTTPS
+	sessionStore.Options.Secure = false                  // TODO: Set to true in production with HTTPS
 	sessionStore.Options.SameSite = http.SameSiteLaxMode // Lax mode for OAuth callbacks
 
 	slog.Info("Redis session store initialized successfully")

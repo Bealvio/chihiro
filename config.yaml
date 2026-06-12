@@ -44,10 +44,11 @@ cluster:
   # Resource limits
   limits:
     max_clusters: 2           # CHIHIRO_MAX_CLUSTERS - Maximum clusters per tenant
-    max_total_nodes: 2        # CHIHIRO_MAX_TOTAL_NODES - Maximum total nodes across all clusters
+    max_total_nodes: 2        # CHIHIRO_MAX_TOTAL_NODES - Maximum total worker nodes across all clusters
+    max_total_cp: 9           # CHIHIRO_MAX_TOTAL_CP - Maximum total control plane replicas across all clusters
 
   # Cluster template as raw YAML string
-  # Placeholders: PLACEHOLDER_NAME, PLACEHOLDER_VERSION, PLACEHOLDER_NODES, PLACEHOLDER_SERVICE_DOMAIN
+  # Placeholders: PLACEHOLDER_NAME, PLACEHOLDER_VERSION, PLACEHOLDER_NODES, PLACEHOLDER_CP_REPLICAS, PLACEHOLDER_SERVICE_DOMAIN
   template: |
     apiVersion: cluster.x-k8s.io/v1beta1
     kind: Cluster
@@ -79,7 +80,7 @@ cluster:
       topology:
         class: kamaji-proxmox
         controlPlane:
-          replicas: 3
+          replicas: PLACEHOLDER_CP_REPLICAS
         variables:
           - name: dnsServers
             value:

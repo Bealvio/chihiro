@@ -20,11 +20,11 @@ import (
 )
 
 type Server struct {
-	watcher           *watcher.ClusterWatcher
-	manager           *cluster.Manager
-	auth              *auth.Middleware
-	kubeconfigGen     *kubeconfig.Generator
-	router            *gin.Engine
+	watcher       *watcher.ClusterWatcher
+	manager       *cluster.Manager
+	auth          *auth.Middleware
+	kubeconfigGen *kubeconfig.Generator
+	router        *gin.Engine
 }
 
 var clusterNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
@@ -297,7 +297,7 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		if req.Groups == "" {
 			slog.Warn("Non-admin user attempted to create cluster without groups", "username", user.Username, "user_groups", user.Groups)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "You must assign at least one of your groups to the cluster",
+				"error":       "You must assign at least one of your groups to the cluster",
 				"your_groups": user.Groups,
 			})
 			return
@@ -308,7 +308,7 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		if len(requestedGroups) == 0 {
 			slog.Warn("Non-admin user attempted to create cluster with empty groups", "username", user.Username, "user_groups", user.Groups)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "You must assign at least one of your groups to the cluster",
+				"error":       "You must assign at least one of your groups to the cluster",
 				"your_groups": user.Groups,
 			})
 			return
@@ -330,9 +330,9 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 		if len(invalidGroups) > 0 {
 			slog.Warn("User attempted to assign groups they don't belong to", "username", user.Username, "user_groups", user.Groups, "requested_groups", requestedGroups, "invalid_groups", invalidGroups)
 			c.JSON(http.StatusForbidden, gin.H{
-				"error": "You can only assign groups you belong to",
+				"error":          "You can only assign groups you belong to",
 				"invalid_groups": invalidGroups,
-				"your_groups": user.Groups,
+				"your_groups":    user.Groups,
 			})
 			return
 		}
@@ -538,7 +538,7 @@ func (s *Server) handleGetUserGroups(c *gin.Context) {
 	slog.Debug("Returning user groups", "username", user.Username, "groups", user.Groups, "is_admin", isAdmin)
 
 	c.JSON(http.StatusOK, gin.H{
-		"groups": user.Groups,
+		"groups":  user.Groups,
 		"isAdmin": isAdmin,
 	})
 }
@@ -588,6 +588,7 @@ func (s *Server) handleGetLimits(c *gin.Context) {
 	// Get limits from config
 	maxClusters := viper.GetInt("cluster.limits.max_clusters")
 	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
+	maxTotalCP := viper.GetInt("cluster.limits.max_total_cp")
 
 	// Get current cluster count and total nodes
 	clusters := s.watcher.GetClusters() // Get all Chihiro-managed clusters to count
@@ -598,14 +599,24 @@ func (s *Server) handleGetLimits(c *gin.Context) {
 		currentTotalNodes += cluster.Nodes
 	}
 
-	slog.Debug("Returning limits info (Chihiro-managed clusters only)", "username", user.Username, "current_clusters", currentClusters, "max_clusters", maxClusters, "current_nodes", currentTotalNodes, "max_nodes", maxTotalNodes)
+	// Count current control plane replicas from cluster specs
+	currentTotalCP, err := s.manager.CountControlPlaneReplicas(c.Request.Context())
+	if err != nil {
+		slog.Error("Failed to count control plane replicas for limits", "username", user.Username, "error", err)
+		currentTotalCP = 0
+	}
+
+	slog.Debug("Returning limits info (Chihiro-managed clusters only)", "username", user.Username, "current_clusters", currentClusters, "max_clusters", maxClusters, "current_nodes", currentTotalNodes, "max_nodes", maxTotalNodes, "current_cp", currentTotalCP, "max_cp", maxTotalCP)
 
 	c.JSON(http.StatusOK, gin.H{
-		"maxClusters": maxClusters,
-		"currentClusters": currentClusters,
-		"maxTotalNodes": maxTotalNodes,
+		"maxClusters":       maxClusters,
+		"currentClusters":   currentClusters,
+		"maxTotalNodes":     maxTotalNodes,
 		"currentTotalNodes": currentTotalNodes,
-		"availableNodes": maxTotalNodes - int(currentTotalNodes),
+		"availableNodes":    maxTotalNodes - int(currentTotalNodes),
+		"maxTotalCP":        maxTotalCP,
+		"currentTotalCP":    currentTotalCP,
+		"availableCP":       maxTotalCP - int(currentTotalCP),
 	})
 }
 
@@ -674,7 +685,7 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 		if len(requestedGroups) == 0 {
 			slog.Warn("Non-admin user attempted to update cluster with empty groups", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "You must assign at least one of your groups to the cluster",
+				"error":       "You must assign at least one of your groups to the cluster",
 				"your_groups": user.Groups,
 			})
 			return
@@ -704,9 +715,9 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 		if len(invalidGroups) > 0 {
 			slog.Warn("User attempted to assign groups they don't belong to", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "requested_groups", requestedGroups, "invalid_groups", invalidGroups)
 			c.JSON(http.StatusForbidden, gin.H{
-				"error": "You can only assign groups you belong to",
+				"error":          "You can only assign groups you belong to",
 				"invalid_groups": invalidGroups,
-				"your_groups": user.Groups,
+				"your_groups":    user.Groups,
 			})
 			return
 		}
@@ -731,9 +742,9 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 		if len(removedGroupsNotOwned) > 0 {
 			slog.Warn("User attempted to remove groups they don't belong to", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "removed_groups", removedGroupsNotOwned)
 			c.JSON(http.StatusForbidden, gin.H{
-				"error": "You cannot remove groups you don't belong to. You can only manage your own groups.",
+				"error":          "You cannot remove groups you don't belong to. You can only manage your own groups.",
 				"removed_groups": removedGroupsNotOwned,
-				"your_groups": user.Groups,
+				"your_groups":    user.Groups,
 			})
 			return
 		}
@@ -750,7 +761,7 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 		if !hasOwnGroup {
 			slog.Warn("Non-admin user attempted to remove all their groups", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "requested_groups", requestedGroups)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "You must keep at least one of your groups assigned to the cluster",
+				"error":       "You must keep at least one of your groups assigned to the cluster",
 				"your_groups": user.Groups,
 			})
 			return
@@ -771,9 +782,9 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	slog.Info("Cluster groups updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "groups", req.Groups)
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "updated",
+		"status":  "updated",
 		"cluster": clusterName,
-		"groups": req.Groups,
+		"groups":  req.Groups,
 	})
 }
 
@@ -839,9 +850,9 @@ func (s *Server) handleEditClusterNodes(c *gin.Context) {
 	slog.Info("Cluster node count updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "nodes", req.Nodes)
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "updated",
+		"status":  "updated",
 		"cluster": clusterName,
-		"nodes": req.Nodes,
+		"nodes":   req.Nodes,
 	})
 }
 
@@ -907,7 +918,7 @@ func (s *Server) handleEditClusterVersion(c *gin.Context) {
 	slog.Info("Cluster version updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "version", req.Version)
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "updated",
+		"status":  "updated",
 		"cluster": clusterName,
 		"version": req.Version,
 	})

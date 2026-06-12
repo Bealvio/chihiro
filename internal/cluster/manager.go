@@ -16,10 +16,11 @@ import (
 )
 
 type CreateClusterRequest struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Nodes   int32  `json:"nodes"`  // Number of worker nodes
-	Groups  string `json:"groups"` // Comma-separated list of groups
+	Name                 string `json:"name"`
+	Version              string `json:"version"`
+	Nodes                int32  `json:"nodes"`                // Number of worker nodes
+	ControlPlaneReplicas int32  `json:"controlPlaneReplicas"` // Number of control plane replicas
+	Groups               string `json:"groups"`               // Comma-separated list of groups
 
 	// Auto-generated fields (not from frontend)
 	Namespace      string `json:"-"`
@@ -122,12 +123,13 @@ func extractRangeNumber(address string) int {
 }
 
 // ValidateClusterLimits checks if creating a new cluster would exceed configured limits
-func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes int32) error {
+func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes, newClusterCPReplicas int32) error {
 	maxClusters := viper.GetInt("cluster.limits.max_clusters")
 	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
+	maxTotalCP := viper.GetInt("cluster.limits.max_total_cp")
 
 	// If limits are not configured or are 0, skip validation
-	if maxClusters <= 0 && maxTotalNodes <= 0 {
+	if maxClusters <= 0 && maxTotalNodes <= 0 && maxTotalCP <= 0 {
 		slog.Debug("No cluster limits configured, skipping validation")
 		return nil
 	}
@@ -146,32 +148,22 @@ func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes int
 
 	currentClusters := len(list.Items)
 	currentTotalNodes := int32(0)
+	currentTotalCP := int32(0)
 
 	// Calculate current total nodes from Chihiro-managed clusters only
 	for _, item := range list.Items {
 		clusterName := item.GetName()
 		if spec, ok := item.Object["spec"].(map[string]interface{}); ok {
 			if topology, ok := spec["topology"].(map[string]interface{}); ok {
+				// Count control plane replicas
+				if controlPlane, ok := topology["controlPlane"].(map[string]interface{}); ok {
+					currentTotalCP += parseReplicas(controlPlane["replicas"], clusterName)
+				}
 				if workers, ok := topology["workers"].(map[string]interface{}); ok {
 					if machineDeployments, ok := workers["machineDeployments"].([]interface{}); ok {
 						for _, md := range machineDeployments {
 							if mdMap, ok := md.(map[string]interface{}); ok {
-								// Handle multiple numeric types
-								if replicas, ok := mdMap["replicas"].(int64); ok {
-									slog.Debug("Counting nodes from cluster", "cluster", clusterName, "replicas", replicas, "type", "int64")
-									currentTotalNodes += int32(replicas)
-								} else if replicas, ok := mdMap["replicas"].(float64); ok {
-									slog.Debug("Counting nodes from cluster", "cluster", clusterName, "replicas", replicas, "type", "float64")
-									currentTotalNodes += int32(replicas)
-								} else if replicas, ok := mdMap["replicas"].(int32); ok {
-									slog.Debug("Counting nodes from cluster", "cluster", clusterName, "replicas", replicas, "type", "int32")
-									currentTotalNodes += replicas
-								} else if replicas, ok := mdMap["replicas"].(int); ok {
-									slog.Debug("Counting nodes from cluster", "cluster", clusterName, "replicas", replicas, "type", "int")
-									currentTotalNodes += int32(replicas)
-								} else {
-									slog.Warn("Could not parse replicas count", "cluster", clusterName, "replicas_value", mdMap["replicas"], "replicas_type", fmt.Sprintf("%T", mdMap["replicas"]))
-								}
+								currentTotalNodes += parseReplicas(mdMap["replicas"], clusterName)
 							}
 						}
 					}
@@ -180,7 +172,7 @@ func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes int
 		}
 	}
 
-	slog.Debug("Validating cluster limits (Chihiro-managed only)", "current_clusters", currentClusters, "max_clusters", maxClusters, "current_nodes", currentTotalNodes, "max_nodes", maxTotalNodes, "new_cluster_nodes", newClusterNodes)
+	slog.Debug("Validating cluster limits (Chihiro-managed only)", "current_clusters", currentClusters, "max_clusters", maxClusters, "current_nodes", currentTotalNodes, "max_nodes", maxTotalNodes, "current_cp", currentTotalCP, "max_cp", maxTotalCP, "new_cluster_nodes", newClusterNodes, "new_cluster_cp", newClusterCPReplicas)
 
 	// Check cluster limit
 	if maxClusters > 0 && currentClusters >= maxClusters {
@@ -195,8 +187,62 @@ func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes int
 		return fmt.Errorf("total node limit exceeded: current %d nodes, adding %d would result in %d nodes (maximum %d allowed)", currentTotalNodes, newClusterNodes, totalAfterCreation, maxTotalNodes)
 	}
 
+	// Check total control plane replicas limit
+	cpAfterCreation := currentTotalCP + newClusterCPReplicas
+	if maxTotalCP > 0 && cpAfterCreation > int32(maxTotalCP) {
+		slog.Warn("Cluster creation blocked: total control plane limit would be exceeded", "current_cp", currentTotalCP, "new_cp", newClusterCPReplicas, "total_would_be", cpAfterCreation, "max_cp", maxTotalCP)
+		return fmt.Errorf("total control plane limit exceeded: current %d control plane replicas, adding %d would result in %d (maximum %d allowed)", currentTotalCP, newClusterCPReplicas, cpAfterCreation, maxTotalCP)
+	}
+
 	slog.Debug("Cluster limits validation passed")
 	return nil
+}
+
+// parseReplicas extracts a replica count from an unstructured field that may be
+// any of the numeric types returned by the dynamic client (int64, float64,
+// int32, int). Returns 0 if the value is missing or of an unexpected type.
+func parseReplicas(value interface{}, clusterName string) int32 {
+	switch v := value.(type) {
+	case int64:
+		return int32(v)
+	case float64:
+		return int32(v)
+	case int32:
+		return v
+	case int:
+		return int32(v)
+	case nil:
+		return 0
+	default:
+		slog.Warn("Could not parse replicas count", "cluster", clusterName, "replicas_value", value, "replicas_type", fmt.Sprintf("%T", value))
+		return 0
+	}
+}
+
+// CountControlPlaneReplicas returns the total control plane replicas across all
+// Chihiro-managed clusters.
+func (m *Manager) CountControlPlaneReplicas(ctx context.Context) (int32, error) {
+	list, err := m.client.Resource(m.clusterGVR).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/managed-by=chihiro",
+	})
+	if err != nil {
+		slog.Error("Failed to list Chihiro-managed clusters for control plane count", "error", err)
+		return 0, fmt.Errorf("failed to count control plane replicas: %v", err)
+	}
+
+	total := int32(0)
+	for _, item := range list.Items {
+		clusterName := item.GetName()
+		if spec, ok := item.Object["spec"].(map[string]interface{}); ok {
+			if topology, ok := spec["topology"].(map[string]interface{}); ok {
+				if controlPlane, ok := topology["controlPlane"].(map[string]interface{}); ok {
+					total += parseReplicas(controlPlane["replicas"], clusterName)
+				}
+			}
+		}
+	}
+
+	return total, nil
 }
 
 func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) error {
@@ -205,8 +251,13 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		req.Nodes = 1
 	}
 
+	// Use provided control plane replicas or default to 3
+	if req.ControlPlaneReplicas <= 0 {
+		req.ControlPlaneReplicas = 3
+	}
+
 	// Validate cluster limits before proceeding
-	if err := m.ValidateClusterLimits(ctx, req.Nodes); err != nil {
+	if err := m.ValidateClusterLimits(ctx, req.Nodes, req.ControlPlaneReplicas); err != nil {
 		slog.Error("Cluster creation blocked by limits", "cluster_name", req.Name, "error", err)
 		return err
 	}
@@ -249,8 +300,9 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_SERVICE_DOMAIN", serviceDomain)
 	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_IP_RANGE", ipRange)
 	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_NODES", fmt.Sprintf("%d", req.Nodes))
+	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_CP_REPLICAS", fmt.Sprintf("%d", req.ControlPlaneReplicas))
 
-	slog.Debug("Applied template replacements", "cluster_name", req.Name, "nodes", req.Nodes, "ip_range", ipRange)
+	slog.Debug("Applied template replacements", "cluster_name", req.Name, "nodes", req.Nodes, "control_plane_replicas", req.ControlPlaneReplicas, "ip_range", ipRange)
 
 	// Parse YAML template into unstructured object
 	cluster := &unstructured.Unstructured{}
@@ -301,7 +353,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		return fmt.Errorf("failed to create cluster: %v", err)
 	}
 
-	slog.Info("Successfully created cluster", "name", req.Name, "namespace", namespace, "ip_range", ipRange, "nodes", req.Nodes, "version", req.Version, "groups", groups)
+	slog.Info("Successfully created cluster", "name", req.Name, "namespace", namespace, "ip_range", ipRange, "nodes", req.Nodes, "control_plane_replicas", req.ControlPlaneReplicas, "version", req.Version, "groups", groups)
 	return nil
 }
 

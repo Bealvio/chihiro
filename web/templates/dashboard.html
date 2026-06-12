@@ -549,6 +549,10 @@
                         Loading limits...
                     </small>
                 </div>
+                <div class="form-group">
+                    <label for="clusterControlPlaneReplicas">Control Plane Replicas</label>
+                    <input type="number" id="clusterControlPlaneReplicas" min="1" value="3" required>
+                </div>
                 <div class="form-group" id="groupsSection">
                     <label for="clusterGroups">Access Groups</label>
                     <select id="clusterGroups" multiple>
@@ -1170,8 +1174,9 @@
                 .then(data => {
                     const limitsEl = document.getElementById('limitsInfo');
                     const nodesInput = document.getElementById('clusterNodes');
+                    const cpInput = document.getElementById('clusterControlPlaneReplicas');
 
-                    if (data.maxClusters > 0 || data.maxTotalNodes > 0) {
+                    if (data.maxClusters > 0 || data.maxTotalNodes > 0 || data.maxTotalCP > 0) {
                         let limitsText = [];
 
                         if (data.maxClusters > 0) {
@@ -1184,6 +1189,13 @@
 
                             // Set max attribute on nodes input
                             nodesInput.max = data.availableNodes;
+                        }
+
+                        if (data.maxTotalCP > 0) {
+                            limitsText.push(`Control plane: ${data.currentTotalCP}/${data.maxTotalCP}`);
+
+                            // Set max attribute on control plane replicas input
+                            cpInput.max = data.availableCP;
                         }
 
                         limitsEl.textContent = limitsText.join(' | ');
@@ -1264,6 +1276,7 @@
             const name = document.getElementById('clusterName').value;
             const version = document.getElementById('clusterVersion').value;
             const nodes = parseInt(document.getElementById('clusterNodes').value);
+            const controlPlaneReplicas = parseInt(document.getElementById('clusterControlPlaneReplicas').value);
             let groups = '';
 
             if (isAdmin) {
@@ -1279,6 +1292,12 @@
                 return;
             }
 
+            // Validate control plane replicas
+            if (controlPlaneReplicas < 1) {
+                alert('Control plane replicas must be at least 1');
+                return;
+            }
+
             // Non-admin users must select at least one group
             if (!isAdmin && (!groups || groups.trim() === '')) {
                 alert('You must assign at least one of your groups to the cluster');
@@ -1289,7 +1308,7 @@
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, version, nodes, groups })
+                body: JSON.stringify({ name, version, nodes, controlPlaneReplicas, groups })
             })
             .then(response => {
                 if (response.ok) {

@@ -29,7 +29,8 @@ data:
         - cluster-creators  # Users in these groups can manage clusters they created or share groups with
       limits:
         max_clusters: 2  # Maximum clusters per user
-        max_total_nodes: 2  # Maximum total nodes per user
+        max_total_nodes: 2  # Maximum total worker nodes per user
+        max_total_cp: 9  # Maximum total control plane replicas per user
       # Cluster template as raw YAML string - CUSTOMIZE for your infrastructure
       template: |
         apiVersion: cluster.x-k8s.io/v1beta1
@@ -51,7 +52,7 @@ data:
           topology:
             class: default  # REPLACE with your cluster class
             controlPlane:
-              replicas: 3
+              replicas: PLACEHOLDER_CP_REPLICAS
             version: PLACEHOLDER_VERSION
             workers:
               machineDeployments:
