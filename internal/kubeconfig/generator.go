@@ -237,8 +237,7 @@ func (g *Generator) extractOIDCConfig(controlPlane *unstructured.Unstructured) (
 
 	oidcConfig := &OIDCConfig{}
 
-	// Try multiple paths to find OIDC configuration
-	// Path 1: Direct OIDC configuration in spec
+	// Path 1: Direct OIDC configuration in spec (some providers expose this).
 	if oidc, ok := spec["oidc"].(map[string]interface{}); ok {
 		if issuerURL, ok := oidc["issuerURL"].(string); ok {
 			oidcConfig.IssuerURL = issuerURL
@@ -251,58 +250,17 @@ func (g *Generator) extractOIDCConfig(controlPlane *unstructured.Unstructured) (
 		}
 	}
 
-	// Path 2: API server extra args (array of strings)
-	if apiServer, ok := spec["apiServer"].(map[string]interface{}); ok {
-		slog.Debug("Found API server config", "cluster", controlPlane.GetName(), "keys", getKeys(apiServer))
-		if extraArgs, ok := apiServer["extraArgs"].([]interface{}); ok {
-			slog.Debug("Found API server extra args", "cluster", controlPlane.GetName(), "count", len(extraArgs))
-			for i, arg := range extraArgs {
-				if argStr, ok := arg.(string); ok {
-					slog.Debug("Processing API server arg", "cluster", controlPlane.GetName(), "index", i, "arg", argStr)
-					// Parse arguments like "--oidc-issuer-url=https://zitadel.bealv.io"
-					if after, ok0 := strings.CutPrefix(argStr, "--oidc-issuer-url="); ok0 {
-						oidcConfig.IssuerURL = after
-						slog.Debug("Found OIDC issuer URL", "cluster", controlPlane.GetName(), "issuer_url", oidcConfig.IssuerURL)
-					} else if after0, ok1 := strings.CutPrefix(argStr, "--oidc-client-id="); ok1 {
-						oidcConfig.ClientID = after0
-						slog.Debug("Found OIDC client ID", "cluster", controlPlane.GetName(), "client_id", oidcConfig.ClientID)
-					} else if after1, ok2 := strings.CutPrefix(argStr, "--oidc-client-secret="); ok2 {
-						oidcConfig.ClientSecret = after1
-						slog.Debug("Found OIDC client secret", "cluster", controlPlane.GetName())
-					}
-				} else if argMap, ok := arg.(map[string]interface{}); ok {
-					// Fallback: handle object format
-					if name, ok := argMap["name"].(string); ok {
-						if value, ok := argMap["value"].(string); ok {
-							switch name {
-							case "oidc-issuer-url":
-								oidcConfig.IssuerURL = value
-							case "oidc-client-id":
-								oidcConfig.ClientID = value
-							case "oidc-client-secret":
-								oidcConfig.ClientSecret = value
-							}
-						}
-					}
-				}
-			}
-		}
+	// Path 2: kube-apiserver --oidc-* flags. These live in an "apiServer"
+	// (or "apiServerExtraArgs") node somewhere in the spec tree, and the
+	// location differs by provider:
+	//   - Kamaji:  spec.apiServer.extraArgs
+	//   - Kubeadm: spec.kubeadmConfigSpec.clusterConfiguration.apiServer.extraArgs
+	// extraArgs itself may be encoded as a list of "--flag=val" strings, a
+	// list of {name,value} objects, or a map[flag]val. We search recursively
+	// and parse whichever encoding we find so chihiro stays provider-agnostic.
+	applyAPIServerOIDCArgs(spec, oidcConfig)
 
-		// Path 3: API server extraArgs as map
-		if extraArgsMap, ok := apiServer["extraArgs"].(map[string]interface{}); ok {
-			if issuerURL, ok := extraArgsMap["oidc-issuer-url"].(string); ok {
-				oidcConfig.IssuerURL = issuerURL
-			}
-			if clientID, ok := extraArgsMap["oidc-client-id"].(string); ok {
-				oidcConfig.ClientID = clientID
-			}
-			if clientSecret, ok := extraArgsMap["oidc-client-secret"].(string); ok {
-				oidcConfig.ClientSecret = clientSecret
-			}
-		}
-	}
-
-	// Path 4: Check status for OIDC configuration
+	// Path 3: Check status for OIDC configuration.
 	if status, ok := controlPlane.Object["status"].(map[string]interface{}); ok {
 		if oidc, ok := status["oidc"].(map[string]interface{}); ok {
 			if issuerURL, ok := oidc["issuerURL"].(string); ok && oidcConfig.IssuerURL == "" {
@@ -435,4 +393,79 @@ func getKeys(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// applyAPIServerOIDCArgs walks the spec tree looking for any "apiServer" node
+// that carries kube-apiserver extraArgs, then parses OIDC flags from them.
+// Only fields not already set are filled, so earlier paths take precedence.
+func applyAPIServerOIDCArgs(node interface{}, oidc *OIDCConfig) {
+	switch v := node.(type) {
+	case map[string]interface{}:
+		// An apiServer node may carry extraArgs directly.
+		if apiServer, ok := v["apiServer"].(map[string]interface{}); ok {
+			if ea, ok := apiServer["extraArgs"]; ok {
+				parseOIDCExtraArgs(ea, oidc)
+			}
+		}
+		// Some providers flatten this to "apiServerExtraArgs".
+		if ea, ok := v["apiServerExtraArgs"]; ok {
+			parseOIDCExtraArgs(ea, oidc)
+		}
+		// Recurse into all children to stay agnostic to nesting depth.
+		for _, child := range v {
+			applyAPIServerOIDCArgs(child, oidc)
+		}
+	case []interface{}:
+		for _, child := range v {
+			applyAPIServerOIDCArgs(child, oidc)
+		}
+	}
+}
+
+// parseOIDCExtraArgs extracts --oidc-* values from kube-apiserver extraArgs in
+// any of the three known encodings: a list of "--flag=val" / "flag=val"
+// strings, a list of {name,value} objects, or a map[flag]val.
+func parseOIDCExtraArgs(extraArgs interface{}, oidc *OIDCConfig) {
+	set := func(flag, value string) {
+		switch flag {
+		case "oidc-issuer-url":
+			if oidc.IssuerURL == "" {
+				oidc.IssuerURL = value
+			}
+		case "oidc-client-id":
+			if oidc.ClientID == "" {
+				oidc.ClientID = value
+			}
+		case "oidc-client-secret":
+			if oidc.ClientSecret == "" {
+				oidc.ClientSecret = value
+			}
+		}
+	}
+
+	switch ea := extraArgs.(type) {
+	case []interface{}:
+		for _, arg := range ea {
+			switch a := arg.(type) {
+			case string:
+				// "--oidc-issuer-url=https://..." or "oidc-issuer-url=https://..."
+				flag, value, found := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+				if found {
+					set(flag, value)
+				}
+			case map[string]interface{}:
+				// { name: "oidc-issuer-url", value: "https://..." }
+				name, _ := a["name"].(string)
+				value, _ := a["value"].(string)
+				set(strings.TrimPrefix(name, "--"), value)
+			}
+		}
+	case map[string]interface{}:
+		// { "oidc-issuer-url": "https://..." }
+		for name, raw := range ea {
+			if value, ok := raw.(string); ok {
+				set(strings.TrimPrefix(name, "--"), value)
+			}
+		}
+	}
 }
