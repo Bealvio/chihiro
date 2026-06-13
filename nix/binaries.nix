@@ -29,7 +29,7 @@ pkgs.buildGoModule {
     "-X github.com/Bealvio/chihiro/cmd.version=${version}"
   ];
 
-  vendorHash = "sha256-bEkgJxBwjmNM6TvQp/3zXnXxoHiXC+6C+Y4naskj4/g=";
+  vendorHash = "sha256-yVtFnfDS1139AGGqZLf0IY5UVs+BZPa4+TOpk9EzrgI=";
 
   doCheck = true;
 
