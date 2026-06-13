@@ -324,7 +324,7 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 	clusterInfo.Domain = domain
 
-		if conditions, ok := status["conditions"].([]interface{}); ok {
+	if conditions, ok := status["conditions"].([]interface{}); ok {
 		for _, condition := range conditions {
 			if condMap, ok := condition.(map[string]interface{}); ok {
 				if condType, ok := condMap["type"].(string); ok && condType == "InfrastructureReady" {
@@ -337,13 +337,21 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 						clusterInfo.ControlPlane = condStatus == "True"
 					}
 				}
+				if condType, ok := condMap["type"].(string); ok && condType == "Available" {
+					if condStatus, ok := condMap["status"].(string); ok {
+						clusterInfo.Available = condStatus == "True"
+					}
+				}
 			}
 		}
 	}
 
 	// Check for Available field in status (provider-specific).
-	if available, ok := status["available"].(bool); ok {
-		clusterInfo.Available = available
+	// Only set if not already determined from conditions.
+	if !clusterInfo.Available {
+		if available, ok := status["available"].(bool); ok {
+			clusterInfo.Available = available
+		}
 	}
 
 	if spec != nil {
