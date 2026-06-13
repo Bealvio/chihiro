@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,53 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// checkWebSocketOrigin validates the WebSocket Origin header to prevent
+// cross-site WebSocket hijacking (CSRF). It uses exact host comparison rather
+// than substring matching, so values like "http://localhost:8080.evil.com"
+// are rejected. An origin is allowed when:
+//   - its host (host:port) exactly equals the request Host (same-origin), or
+//   - it exactly equals a localhost development origin, or
+//   - it exactly equals one of the configured allowed_origins entries.
+func checkWebSocketOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false // Reject if no origin header
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Host == "" {
+		slog.Warn("WebSocket connection rejected due to unparseable origin", "origin", origin, "remote_addr", r.RemoteAddr)
+		return false
+	}
+
+	// Same-origin: the Origin's host:port must exactly match the request Host.
+	if originURL.Host == r.Host {
+		return true
+	}
+
+	// Exact-match allow list: full origin URLs (scheme + host).
+	allowedOrigins := []string{
+		"http://localhost:8080",
+		"http://127.0.0.1:8080",
+	}
+	if configOrigins := viper.GetString("allowed_origins"); configOrigins != "" {
+		for _, o := range strings.Split(configOrigins, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
+
+	for _, allowed := range allowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+
+	slog.Warn("WebSocket connection rejected due to invalid origin", "origin", origin, "remote_addr", r.RemoteAddr)
+	return false
+}
+
 type ClusterNetwork struct {
 	PodCIDRs      []string `json:"podCIDRs"`
 	ServiceCIDRs  []string `json:"serviceCIDRs"`
@@ -31,27 +79,27 @@ type ClusterNetwork struct {
 }
 
 type ClusterInfo struct {
-	Name                 string                    `json:"name"`
-	Namespace            string                    `json:"namespace"`
-	Phase                string                    `json:"phase"`
-	Ready                bool                      `json:"ready"`
-	Available            bool                      `json:"available"`
-	Version              string                    `json:"version"`
-	Nodes                int32                     `json:"nodes"`
-	ControlPlaneReplicas int32                     `json:"controlPlaneReplicas"`
-	CreatedAt            time.Time                 `json:"createdAt"`
-	Status               map[string]interface{}    `json:"status"`
-	InfraReady           bool                      `json:"infraReady"`
-	ControlPlane         bool                      `json:"controlPlane"`
-	Network              *ClusterNetwork           `json:"network"`
-	Labels               map[string]interface{}    `json:"labels"`
-	Annotations          map[string]interface{}    `json:"annotations"`
-	APIEndpoint          string                    `json:"apiEndpoint"`
-	Groups               []string                  `json:"groups"`
-	Creator              string                    `json:"creator"`
-	Domain               string                    `json:"domain"`
-	Parameters           map[string]string         `json:"parameters"`
-	WorkerGroups         []cluster.WorkerGroup     `json:"workerGroups"`
+	Name                 string                 `json:"name"`
+	Namespace            string                 `json:"namespace"`
+	Phase                string                 `json:"phase"`
+	Ready                bool                   `json:"ready"`
+	Available            bool                   `json:"available"`
+	Version              string                 `json:"version"`
+	Nodes                int32                  `json:"nodes"`
+	ControlPlaneReplicas int32                  `json:"controlPlaneReplicas"`
+	CreatedAt            time.Time              `json:"createdAt"`
+	Status               map[string]interface{} `json:"status"`
+	InfraReady           bool                   `json:"infraReady"`
+	ControlPlane         bool                   `json:"controlPlane"`
+	Network              *ClusterNetwork        `json:"network"`
+	Labels               map[string]interface{} `json:"labels"`
+	Annotations          map[string]interface{} `json:"annotations"`
+	APIEndpoint          string                 `json:"apiEndpoint"`
+	Groups               []string               `json:"groups"`
+	Creator              string                 `json:"creator"`
+	Domain               string                 `json:"domain"`
+	Parameters           map[string]string      `json:"parameters"`
+	WorkerGroups         []cluster.WorkerGroup  `json:"workerGroups"`
 }
 
 type ClusterWatcher struct {
@@ -130,34 +178,7 @@ func NewClusterWatcher(kubeconfig string) (*ClusterWatcher, error) {
 		clients:     make(map[*websocket.Conn]*UserWebSocketClient),
 		adminGroups: adminGroups,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// Validate WebSocket origin to prevent CSRF attacks
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					return false // Reject if no origin header
-				}
-
-				// Allow same-origin and localhost for development
-				allowedOrigins := []string{
-					"http://localhost:8080",
-					"http://127.0.0.1:8080",
-					r.Host, // Same origin
-				}
-
-				// Add configured allowed origins from environment
-				if configOrigins := viper.GetString("allowed_origins"); configOrigins != "" {
-					allowedOrigins = append(allowedOrigins, strings.Split(configOrigins, ",")...)
-				}
-
-				for _, allowed := range allowedOrigins {
-					if strings.Contains(origin, allowed) {
-						return true
-					}
-				}
-
-				slog.Warn("WebSocket connection rejected due to invalid origin", "origin", origin, "remote_addr", r.RemoteAddr)
-				return false
-			},
+			CheckOrigin: checkWebSocketOrigin,
 		},
 	}, nil
 }

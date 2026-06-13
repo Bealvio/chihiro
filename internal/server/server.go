@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
@@ -25,6 +26,7 @@ type Server struct {
 	auth          *auth.Middleware
 	kubeconfigGen *kubeconfig.Generator
 	router        *gin.Engine
+	stopCleanup   chan struct{}
 }
 
 var clusterNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
@@ -49,6 +51,7 @@ func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *au
 		auth:          authMiddleware,
 		kubeconfigGen: kubeconfigGen,
 		router:        gin.New(),
+		stopCleanup:   make(chan struct{}),
 	}
 
 	s.setupRoutes()
@@ -59,6 +62,14 @@ func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *au
 
 func (s *Server) Router() *gin.Engine {
 	return s.router
+}
+
+// Close stops background goroutines started by the server (e.g. rate limiter
+// cleanup). Safe to call once during shutdown.
+func (s *Server) Close() {
+	if s.stopCleanup != nil {
+		close(s.stopCleanup)
+	}
 }
 
 func (s *Server) setupRoutes() {
@@ -74,9 +85,12 @@ func (s *Server) setupRoutes() {
 	// Serve static files
 	s.router.Static("/static", "web/static")
 
-	// Create rate limiters
+	// Create rate limiters and start periodic eviction of idle per-IP entries
+	// so the limiter maps do not grow unbounded (DoS / memory-leak defense).
 	authRateLimiter := middleware.AuthRateLimiter()
 	apiRateLimiter := middleware.APIRateLimiter()
+	authRateLimiter.StartCleanup(5*time.Minute, 15*time.Minute, s.stopCleanup)
+	apiRateLimiter.StartCleanup(5*time.Minute, 15*time.Minute, s.stopCleanup)
 
 	// Authentication routes (public) with strict rate limiting
 	s.router.GET("/login", s.handleLoginPage)
@@ -928,7 +942,7 @@ func (s *Server) handleEditWorkerGroups(c *gin.Context) {
 	namespace := c.DefaultQuery("namespace", "capi-system")
 
 	var req struct {
-		Namespace   string                `json:"namespace"`
+		Namespace    string                `json:"namespace"`
 		WorkerGroups []cluster.WorkerGroup `json:"workerGroups"`
 	}
 

@@ -107,11 +107,6 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_nodes", maxNodes)
 		}
 	}
-	if env := os.Getenv("X_TOTAL_CP"); env != "" {
-		if maxCP, err := strconv.Atoi(env); err == nil {
-			viper.Set("cluster.limits.max_total_cp", maxCP)
-		}
-	}
 	if env := os.Getenv("CHIHIRO_MAX_TOTAL_CP"); env != "" {
 		if maxCP, err := strconv.Atoi(env); err == nil {
 			viper.Set("cluster.limits.max_total_cp", maxCP)
@@ -261,10 +256,22 @@ func runServer() {
 	sessionStore.Options.Path = "/"
 	sessionStore.Options.MaxAge = sessionTTL
 	sessionStore.Options.HttpOnly = true
-	// Only set Secure flag if running on HTTPS
-	// For local development on HTTP, this must be false
-	sessionStore.Options.Secure = false                  // TODO: Set to true in production with HTTPS
+	// Drive the Secure flag from config/TLS rather than hardcoding it.
+	// Precedence:
+	//   1. Explicit CHIHIRO_SESSION_SECURE / session.secure setting.
+	//   2. Otherwise auto-detect: true when the OIDC redirect URL is HTTPS
+	//      (i.e. served behind TLS), false for local HTTP development.
+	// The Secure flag must be false on plain HTTP or browsers drop the cookie.
+	secureCookies := strings.HasPrefix(strings.ToLower(authConfig.RedirectURL), "https://")
+	if env := os.Getenv("CHIHIRO_SESSION_SECURE"); env != "" {
+		secureCookies = parseBool(env)
+	} else if viper.IsSet("session.secure") {
+		secureCookies = viper.GetBool("session.secure")
+	}
+	sessionStore.Options.Secure = secureCookies
 	sessionStore.Options.SameSite = http.SameSiteLaxMode // Lax mode for OAuth callbacks
+
+	slog.Info("Session cookie security configured", "secure", secureCookies)
 
 	slog.Info("Redis session store initialized successfully")
 
@@ -279,6 +286,7 @@ func runServer() {
 	clusterWatcher.Start(ctx)
 
 	srv := server.NewServer(clusterWatcher, clusterManager, authMiddleware)
+	defer srv.Close()
 
 	address := fmt.Sprintf("%s:%d", host, port)
 
@@ -314,6 +322,17 @@ func runServer() {
 	slog.Info("Server exited successfully")
 }
 
+// parseBool interprets common truthy string values (1, t, true, yes, on)
+// case-insensitively. Unrecognized values are treated as false.
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // Helper functions for environment variable overrides
 func getEnvOrConfig(envKey, configKey, defaultValue string) string {
 	if env := os.Getenv(envKey); env != "" {
@@ -332,26 +351,6 @@ func getEnvOrConfigInt(envKey, configKey string, defaultValue int) int {
 		}
 	}
 	if val := viper.GetInt(configKey); val != 0 {
-		return val
-	}
-	return defaultValue
-}
-
-func getEnvOrConfigStringSlice(envKey, configKey string, defaultValue []string) []string {
-	if env := os.Getenv(envKey); env != "" {
-		// Parse comma-separated values
-		var result []string
-		for _, item := range strings.Split(env, ",") {
-			trimmed := strings.TrimSpace(item)
-			if trimmed != "" {
-				result = append(result, trimmed)
-			}
-		}
-		if len(result) > 0 {
-			return result
-		}
-	}
-	if val := viper.GetStringSlice(configKey); len(val) > 0 {
 		return val
 	}
 	return defaultValue
