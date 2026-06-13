@@ -1,0 +1,153 @@
+package cluster
+
+import (
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+// EditableField describes whether a cluster field can be edited after creation
+// and any bounds that apply to it. It is driven by the `editable` flag on
+// cluster.injections entries (built-in fields) and cluster.parameters entries
+// (template placeholders).
+type EditableField struct {
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+	Min     *int   `json:"min,omitempty"`
+	Max     *int   `json:"max,omitempty"`
+}
+
+// injectionConfig is a single cluster.injections entry. path is the YAML path
+// the built-in value is written to (may be empty for annotation-managed fields
+// such as groups). The remaining fields mirror the editable metadata.
+type injectionConfig struct {
+	Path     string
+	Label    string
+	Editable bool
+	Min      *int
+	Max      *int
+}
+
+// canonicalBuiltinKeys maps lowercase built-in keys back to their canonical
+// camelCase form so the API and frontend receive predictable keys (viper
+// lowercases config keys).
+var canonicalBuiltinKeys = map[string]string{
+	"name":                 "name",
+	"version":              "version",
+	"groups":               "groups",
+	"servicedomain":        "serviceDomain",
+	"iprange":              "ipRange",
+	"nodes":                "nodes",
+	"workergroups":         "workerGroups",
+	"controlplanereplicas": "controlPlaneReplicas",
+}
+
+// loadInjectionConfig reads the cluster.injections section. Each entry is a
+// nested map with a `path` plus optional editable metadata. viper lowercases
+// keys, so we read the raw nested map and key by lowercase.
+func loadInjectionConfig() map[string]injectionConfig {
+	result := make(map[string]injectionConfig)
+
+	raw, ok := viper.Get("cluster.injections").(map[string]interface{})
+	if !ok {
+		return result
+	}
+
+	for key, v := range raw {
+		fields, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		result[strings.ToLower(key)] = injectionConfig{
+			Path:     getString(fields, "path"),
+			Label:    getString(fields, "label"),
+			Editable: getBool(fields, "editable"),
+			Min:      getIntPtr(fields, "min"),
+			Max:      getIntPtr(fields, "max"),
+		}
+	}
+	return result
+}
+
+// GetEditableFields returns every field marked editable: true, drawn from both
+// cluster.injections (built-in fields like version/nodes/controlPlaneReplicas/
+// groups) and cluster.parameters (template placeholders like workerFlavor).
+//
+// Keys use canonical casing: built-ins map to their camelCase form, template
+// parameters use the casing from the template placeholder. Callers should still
+// match case-insensitively.
+func GetEditableFields(templateStr string) []EditableField {
+	fields := make([]EditableField, 0)
+
+	// Built-in fields from injections.
+	for key, cfg := range loadInjectionConfig() {
+		if !cfg.Editable {
+			continue
+		}
+		outKey := key
+		if c, ok := canonicalBuiltinKeys[key]; ok {
+			outKey = c
+		}
+		fields = append(fields, EditableField{
+			Key:     outKey,
+			Enabled: true,
+			Min:     cfg.Min,
+			Max:     cfg.Max,
+		})
+	}
+
+	// Template parameters from cluster.parameters. Recover original-cased keys
+	// from the template tokens (viper lowercases config keys).
+	casing := make(map[string]string)
+	for _, m := range chihiroParamRegex.FindAllStringSubmatch(templateStr, -1) {
+		casing[strings.ToLower(m[1])] = m[1]
+	}
+	for key, cfg := range loadParameterConfig() {
+		if !cfg.Editable {
+			continue
+		}
+		outKey := key
+		if c, ok := casing[strings.ToLower(key)]; ok {
+			outKey = c
+		}
+		fields = append(fields, EditableField{
+			Key:     outKey,
+			Enabled: true,
+			Min:     cfg.Min,
+			Max:     cfg.Max,
+		})
+	}
+
+	return fields
+}
+
+// GetEditableField returns the editable configuration for a single field,
+// looked up case-insensitively. The second return value is false when the
+// field is not editable.
+func GetEditableField(templateStr, key string) (EditableField, bool) {
+	for _, f := range GetEditableFields(templateStr) {
+		if strings.EqualFold(f.Key, key) {
+			return f, true
+		}
+	}
+	return EditableField{}, false
+}
+
+func getIntPtr(m map[string]interface{}, key string) *int {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	switch n := v.(type) {
+	case int:
+		return &n
+	case int64:
+		i := int(n)
+		return &i
+	case float64:
+		i := int(n)
+		return &i
+	default:
+		return nil
+	}
+}

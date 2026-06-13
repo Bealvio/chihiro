@@ -117,6 +117,28 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_cp", maxCP)
 		}
 	}
+	if env := os.Getenv("CHIHIRO_WORKER_FLAVORS"); env != "" {
+		var flavors []string
+		for _, item := range strings.Split(env, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				flavors = append(flavors, trimmed)
+			}
+		}
+		if len(flavors) > 0 {
+			viper.Set("cluster.worker_flavors", flavors)
+		}
+	}
+	if env := os.Getenv("CHIHIRO_WORKER_CLASSES"); env != "" {
+		var classes []string
+		for _, item := range strings.Split(env, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				classes = append(classes, trimmed)
+			}
+		}
+		if len(classes) > 0 {
+			viper.Set("cluster.worker_classes", classes)
+		}
+	}
 
 	// Log cluster configuration
 	clusterDomain := viper.GetString("cluster.domain")

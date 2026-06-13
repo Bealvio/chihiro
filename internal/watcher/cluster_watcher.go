@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Bealvio/chihiro/internal/capi"
+	"github.com/Bealvio/chihiro/internal/cluster"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/viper"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,29 +25,33 @@ import (
 )
 
 type ClusterNetwork struct {
-	PodCIDRs     []string `json:"podCIDRs"`
-	ServiceCIDRs []string `json:"serviceCIDRs"`
-	ServiceDomain string  `json:"serviceDomain"`
+	PodCIDRs      []string `json:"podCIDRs"`
+	ServiceCIDRs  []string `json:"serviceCIDRs"`
+	ServiceDomain string   `json:"serviceDomain"`
 }
 
 type ClusterInfo struct {
-	Name         string                 `json:"name"`
-	Namespace    string                 `json:"namespace"`
-	Phase        string                 `json:"phase"`
-	Ready        bool                   `json:"ready"`
-	Version      string                 `json:"version"`
-	Nodes        int32                  `json:"nodes"`
-	CreatedAt    time.Time              `json:"createdAt"`
-	Status       map[string]interface{} `json:"status"`
-	InfraReady   bool                   `json:"infraReady"`
-	ControlPlane bool                   `json:"controlPlane"`
-	Network      *ClusterNetwork        `json:"network"`
-	Labels       map[string]interface{} `json:"labels"`
-	Annotations  map[string]interface{} `json:"annotations"`
-	APIEndpoint  string                 `json:"apiEndpoint"`
-	Groups       []string               `json:"groups"`
-	Creator      string                 `json:"creator"`
-	Domain       string                 `json:"domain"`
+	Name                 string                    `json:"name"`
+	Namespace            string                    `json:"namespace"`
+	Phase                string                    `json:"phase"`
+	Ready                bool                      `json:"ready"`
+	Available            bool                      `json:"available"`
+	Version              string                    `json:"version"`
+	Nodes                int32                     `json:"nodes"`
+	ControlPlaneReplicas int32                     `json:"controlPlaneReplicas"`
+	CreatedAt            time.Time                 `json:"createdAt"`
+	Status               map[string]interface{}    `json:"status"`
+	InfraReady           bool                      `json:"infraReady"`
+	ControlPlane         bool                      `json:"controlPlane"`
+	Network              *ClusterNetwork           `json:"network"`
+	Labels               map[string]interface{}    `json:"labels"`
+	Annotations          map[string]interface{}    `json:"annotations"`
+	APIEndpoint          string                    `json:"apiEndpoint"`
+	Groups               []string                  `json:"groups"`
+	Creator              string                    `json:"creator"`
+	Domain               string                    `json:"domain"`
+	Parameters           map[string]string         `json:"parameters"`
+	WorkerGroups         []cluster.WorkerGroup     `json:"workerGroups"`
 }
 
 type ClusterWatcher struct {
@@ -63,6 +68,18 @@ type ClusterWatcher struct {
 type UserWebSocketClient struct {
 	Conn   *websocket.Conn
 	Groups []string
+	// writeMu serializes writes to Conn. gorilla/websocket permits only one
+	// concurrent writer per connection, and multiple goroutines (the watch
+	// loop, readiness monitor, and manual refreshes) can broadcast at once.
+	writeMu sync.Mutex
+}
+
+// writeMessage serializes writes to the underlying connection so concurrent
+// broadcasts never write to the same socket at the same time.
+func (c *UserWebSocketClient) writeMessage(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.Conn.WriteMessage(messageType, data)
 }
 
 func NewClusterWatcher(kubeconfig string) (*ClusterWatcher, error) {
@@ -185,8 +202,8 @@ func (cw *ClusterWatcher) watchClusters(ctx context.Context) {
 		default:
 			// Watch clusters managed by chihiro
 			watcher, err := cw.client.Resource(gvr).Watch(ctx, metav1.ListOptions{
-			LabelSelector: "app.kubernetes.io/managed-by=chihiro",
-		})
+				LabelSelector: "app.kubernetes.io/managed-by=chihiro",
+			})
 			if err != nil {
 				slog.Error("Failed to create cluster watcher", "error", err)
 				time.Sleep(5 * time.Second)
@@ -307,7 +324,7 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 	clusterInfo.Domain = domain
 
-	if conditions, ok := status["conditions"].([]interface{}); ok {
+		if conditions, ok := status["conditions"].([]interface{}); ok {
 		for _, condition := range conditions {
 			if condMap, ok := condition.(map[string]interface{}); ok {
 				if condType, ok := condMap["type"].(string); ok && condType == "InfrastructureReady" {
@@ -324,6 +341,11 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
+	// Check for Available field in status (provider-specific).
+	if available, ok := status["available"].(bool); ok {
+		clusterInfo.Available = available
+	}
+
 	if spec != nil {
 		// Try different paths for version
 		if controlPlaneRef, ok := spec["controlPlaneRef"].(map[string]interface{}); ok {
@@ -335,6 +357,11 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		if topology, ok := spec["topology"].(map[string]interface{}); ok {
 			if version, ok := topology["version"].(string); ok {
 				clusterInfo.Version = version
+			}
+
+			// Read control plane replicas from the topology
+			if controlPlane, ok := topology["controlPlane"].(map[string]interface{}); ok {
+				clusterInfo.ControlPlaneReplicas = int32(toInt(controlPlane["replicas"]))
 			}
 
 			// Calculate total nodes from machineDeployments
@@ -458,11 +485,37 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
+	// Extract worker groups from annotations for display
+	if wgValue, exists := clusterInfo.Annotations["chihiro.io/worker-groups"]; exists {
+		if wgStr, ok := wgValue.(string); ok && wgStr != "" {
+			var workerGroups []cluster.WorkerGroup
+			if err := json.Unmarshal([]byte(wgStr), &workerGroups); err == nil {
+				clusterInfo.WorkerGroups = workerGroups
+				slog.Debug("Parsed cluster worker groups", "cluster", clusterInfo.Name, "worker_groups", len(workerGroups))
+			} else {
+				slog.Warn("Failed to parse worker-groups annotation", "cluster", clusterInfo.Name, "error", err)
+			}
+		}
+	}
+
 	// Extract creator from annotations
 	if creatorValue, exists := clusterInfo.Annotations["chihiro.io/creator"]; exists {
 		if creatorStr, ok := creatorValue.(string); ok {
 			clusterInfo.Creator = creatorStr
 			slog.Debug("Parsed cluster creator", "cluster", clusterInfo.Name, "creator", clusterInfo.Creator)
+		}
+	}
+
+	// Extract the parameters set at creation time for display in the UI.
+	if paramsValue, exists := clusterInfo.Annotations["chihiro.io/parameters"]; exists {
+		if paramsStr, ok := paramsValue.(string); ok && paramsStr != "" {
+			params := make(map[string]string)
+			if err := json.Unmarshal([]byte(paramsStr), &params); err == nil {
+				clusterInfo.Parameters = params
+				slog.Debug("Parsed cluster parameters", "cluster", clusterInfo.Name, "param_count", len(params))
+			} else {
+				slog.Warn("Failed to parse cluster parameters annotation", "cluster", clusterInfo.Name, "error", err)
+			}
 		}
 	}
 
@@ -575,8 +628,12 @@ func (cw *ClusterWatcher) testAPIEndpointReachability(endpoint string) bool {
 	}
 	defer resp.Body.Close()
 
-	// We expect 200 (OK) for the /api endpoint on a working API server
-	if resp.StatusCode == http.StatusOK {
+	// A working API server responds to /api. 200 means anonymous access is
+	// allowed; 401/403 mean the server is up and authenticating/authorizing
+	// requests (just rejecting this unauthenticated one) — all indicate the
+	// endpoint is reachable and ready.
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusUnauthorized, http.StatusForbidden:
 		slog.Info("API endpoint reachable and ready", "url", testURL, "status_code", resp.StatusCode)
 		return true
 	}
@@ -673,7 +730,7 @@ func (cw *ClusterWatcher) broadcastUpdate() {
 			continue
 		}
 
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		if err := userClient.writeMessage(websocket.TextMessage, data); err != nil {
 			conn.Close()
 			toRemove = append(toRemove, conn)
 		}
@@ -689,13 +746,13 @@ func (cw *ClusterWatcher) broadcastUpdate() {
 	}
 }
 
-
 func (cw *ClusterWatcher) AddWebSocketClient(conn *websocket.Conn, userGroups []string) {
-	cw.mutex.Lock()
-	cw.clients[conn] = &UserWebSocketClient{
+	client := &UserWebSocketClient{
 		Conn:   conn,
 		Groups: userGroups,
 	}
+	cw.mutex.Lock()
+	cw.clients[conn] = client
 	cw.mutex.Unlock()
 
 	// Send initial user-specific data in consistent format
@@ -704,7 +761,7 @@ func (cw *ClusterWatcher) AddWebSocketClient(conn *websocket.Conn, userGroups []
 		"clusters": clusters,
 	}
 	data, _ := json.Marshal(message)
-	conn.WriteMessage(websocket.TextMessage, data)
+	client.writeMessage(websocket.TextMessage, data)
 }
 
 func (cw *ClusterWatcher) RemoveWebSocketClient(conn *websocket.Conn) {

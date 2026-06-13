@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -15,12 +16,24 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// WorkerGroup describes a group of worker nodes with a shared flavor and
+// replica count.  Multiple groups allow heterogeneous node pools within a
+// single cluster.
+type WorkerGroup struct {
+	Name     string `json:"name"`
+	Class    string `json:"class"`
+	Flavor   string `json:"flavor"`
+	Replicas int32  `json:"replicas"`
+}
+
 type CreateClusterRequest struct {
-	Name                 string `json:"name"`
-	Version              string `json:"version"`
-	Nodes                int32  `json:"nodes"`                // Number of worker nodes
-	ControlPlaneReplicas int32  `json:"controlPlaneReplicas"` // Number of control plane replicas
-	Groups               string `json:"groups"`               // Comma-separated list of groups
+	Name                 string            `json:"name"`
+	Version              string            `json:"version"`
+	Nodes                int32             `json:"nodes"`                // Number of worker nodes (legacy, used when WorkerGroups is empty)
+	ControlPlaneReplicas int32             `json:"controlPlaneReplicas"` // Number of control plane replicas
+	Groups               string            `json:"groups"`               // Comma-separated list of groups
+	WorkerGroups         []WorkerGroup     `json:"workerGroups"`         // Heterogeneous worker groups
+	Parameters           map[string]string `json:"parameters"`           // Dynamic template parameters
 
 	// Auto-generated fields (not from frontend)
 	Namespace      string `json:"-"`
@@ -246,10 +259,35 @@ func (m *Manager) CountControlPlaneReplicas(ctx context.Context) (int32, error) 
 }
 
 func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) error {
-	// Use provided node count or default to 1
-	if req.Nodes <= 0 {
-		req.Nodes = 1
+	// Normalise worker groups: if none supplied, fall back to the legacy
+	// single-pool "nodes" field.
+	if len(req.WorkerGroups) == 0 {
+		nodes := req.Nodes
+		if nodes <= 0 {
+			nodes = 1
+		}
+		defaultFlavor := req.Parameters["workerFlavor"]
+		if defaultFlavor == "" {
+			if flavors := viper.GetStringSlice("cluster.worker_flavors"); len(flavors) > 0 {
+				defaultFlavor = flavors[0]
+			} else {
+				defaultFlavor = "xmedium"
+			}
+		}
+		req.WorkerGroups = []WorkerGroup{
+			{Name: "worker", Flavor: defaultFlavor, Replicas: nodes},
+		}
 	}
+
+	// Compute total worker replicas across all groups.
+	totalWorkerReplicas := int32(0)
+	for _, wg := range req.WorkerGroups {
+		if wg.Replicas <= 0 {
+			wg.Replicas = 1
+		}
+		totalWorkerReplicas += wg.Replicas
+	}
+	req.Nodes = totalWorkerReplicas
 
 	// Use provided control plane replicas or default to 3
 	if req.ControlPlaneReplicas <= 0 {
@@ -262,7 +300,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		return err
 	}
 
-	slog.Debug("Starting cluster creation", "name", req.Name, "nodes", req.Nodes, "version", req.Version)
+	slog.Debug("Starting cluster creation", "name", req.Name, "worker_groups", len(req.WorkerGroups), "total_nodes", req.Nodes, "version", req.Version)
 
 	// Get next available IP range
 	ipRange, err := m.GetNextAvailableIPRange(ctx)
@@ -294,21 +332,116 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 
 	// Apply replacements to template
 	serviceDomain := req.Name + ".local"
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_NAME", req.Name)
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_VERSION", req.Version)
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_GROUPS", groups)
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_SERVICE_DOMAIN", serviceDomain)
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_IP_RANGE", ipRange)
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_NODES", fmt.Sprintf("%d", req.Nodes))
-	templateStr = strings.ReplaceAll(templateStr, "PLACEHOLDER_CP_REPLICAS", fmt.Sprintf("%d", req.ControlPlaneReplicas))
 
-	slog.Debug("Applied template replacements", "cluster_name", req.Name, "nodes", req.Nodes, "control_plane_replicas", req.ControlPlaneReplicas, "ip_range", ipRange)
+	// Built-in values that can be referenced as {{ chihiro.* }} tokens directly
+	// in the template, in addition to being injected at configured YAML paths.
+	// Keyed by lowercase for case-insensitive matching against the template's
+	// original casing.
+	builtinTokens := map[string]string{
+		"name":                 req.Name,
+		"version":              req.Version,
+		"groups":               groups,
+		"servicedomain":        serviceDomain,
+		"iprange":              ipRange,
+		"nodes":                strconv.Itoa(int(req.Nodes)),
+		"controlplanereplicas": strconv.Itoa(int(req.ControlPlaneReplicas)),
+	}
+
+	// Inject user-defined dynamic template parameters — scan template for all
+	// {{ chihiro.* }} placeholders and resolve each from req.Parameters first,
+	// then fall back to config defaults, then to built-in tokens.
+	// Defaults may themselves contain {{ chihiro.* }} references (e.g.
+	// "hephaestus-kaas-26.05-{{ chihiro.version }}"), so we loop until all
+	// placeholders are resolved or no progress is made.
+	if req.Parameters == nil {
+		req.Parameters = make(map[string]string)
+	}
+	defaults := GetParameterDefaults()
+	resolvedParams := make(map[string]string)
+	const maxIterations = 10
+	for iter := 0; iter < maxIterations; iter++ {
+		matches := chihiroParamRegex.FindAllStringSubmatch(templateStr, -1)
+		if len(matches) == 0 {
+			break
+		}
+		replaced := false
+		for _, match := range matches {
+			key := match[1]
+			placeholder := fmt.Sprintf("{{ chihiro.%s }}", key)
+
+			// Already resolved in a previous iteration — skip.
+			if strings.Contains(templateStr, placeholder) == false {
+				continue
+			}
+
+			value := req.Parameters[key]
+			if value == "" {
+				// Config defaults come from viper which lowercases all keys, so
+				// match case-insensitively against the template's original casing.
+				if v, ok := defaults[key]; ok {
+					value = v
+				} else {
+					value = defaults[strings.ToLower(key)]
+				}
+			}
+			if value == "" {
+				// Fall back to built-in tokens (name, version, nodes, ipRange, …).
+				value = builtinTokens[strings.ToLower(key)]
+			}
+			if value == "" {
+				slog.Warn("Template parameter has no value and no default", "cluster_name", req.Name, "key", key)
+				continue
+			}
+			resolvedParams[key] = value
+			slog.Info("Replacing template placeholder", "cluster_name", req.Name, "key", key, "placeholder", placeholder, "value", value)
+			templateStr = strings.ReplaceAll(templateStr, placeholder, value)
+			replaced = true
+		}
+		if !replaced {
+			break
+		}
+	}
+
+	// Log any remaining unreplaced placeholders
+	remainingMatches := chihiroParamRegex.FindAllString(templateStr, -1)
+	if len(remainingMatches) > 0 {
+		slog.Error("Unreplaced template placeholders remain", "cluster_name", req.Name, "remaining", remainingMatches)
+		return fmt.Errorf("unresolved template parameters: %v — provide values in the form or set defaults in cluster.parameters config", remainingMatches)
+	}
 
 	// Parse YAML template into unstructured object
 	cluster := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(templateStr), &cluster.Object); err != nil {
 		slog.Error("Failed to parse cluster template", "error", err)
 		return fmt.Errorf("failed to parse cluster template: %v", err)
+	}
+
+	// Inject built-in values at configured YAML paths. viper lowercases the
+	// injection map keys, so key the builtins map by lowercase too and look up
+	// case-insensitively.
+	builtins := map[string]interface{}{
+		"name":                 req.Name,
+		"version":              req.Version,
+		"groups":               groups,
+		"servicedomain":        serviceDomain,
+		"iprange":              ipRange,
+		"nodes":                req.Nodes,
+		"controlplanereplicas": req.ControlPlaneReplicas,
+	}
+	for key, inj := range loadInjectionConfig() {
+		if inj.Path == "" {
+			continue
+		}
+		if val, ok := builtins[strings.ToLower(key)]; ok {
+			setYAMLPath(cluster.Object, inj.Path, val)
+		}
+	}
+
+	// Build the machineDeployments array from worker groups and inject it
+	// into the topology, replacing the single placeholder from the template.
+	if err := m.injectWorkerGroups(cluster.Object, req.WorkerGroups); err != nil {
+		slog.Error("Failed to inject worker groups", "cluster_name", req.Name, "error", err)
+		return fmt.Errorf("failed to inject worker groups: %v", err)
 	}
 
 	// Add Chihiro-specific labels and annotations on top of template
@@ -329,6 +462,21 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	annotations["chihiro.io/groups"] = groups
 	if req.Creator != "" {
 		annotations["chihiro.io/creator"] = req.Creator
+	}
+	// Persist worker groups as JSON so the UI can display and edit them.
+	if wgJSON, err := json.Marshal(req.WorkerGroups); err == nil {
+		annotations["chihiro.io/worker-groups"] = string(wgJSON)
+	} else {
+		slog.Warn("Failed to marshal worker groups annotation", "cluster_name", req.Name, "error", err)
+	}
+	// Persist the resolved template parameters so the UI can display exactly
+	// what was set for this cluster.
+	if len(resolvedParams) > 0 {
+		if paramsJSON, err := json.Marshal(resolvedParams); err == nil {
+			annotations["chihiro.io/parameters"] = string(paramsJSON)
+		} else {
+			slog.Warn("Failed to marshal resolved parameters annotation", "cluster_name", req.Name, "error", err)
+		}
 	}
 	cluster.SetAnnotations(annotations)
 
@@ -533,6 +681,107 @@ func (m *Manager) UpdateClusterNodeCount(ctx context.Context, clusterName, names
 	return nil
 }
 
+// ValidateControlPlaneUpdate checks that the requested control plane replica
+// count is within the configured per-field min/max bounds and does not push the
+// total control plane replicas across all Chihiro-managed clusters over the
+// configured max_total_cp limit.
+func (m *Manager) ValidateControlPlaneUpdate(ctx context.Context, clusterName, namespace string, newReplicas int32) error {
+	// Enforce configured min/max bounds for the controlPlaneReplicas field.
+	if field, ok := GetEditableField(viper.GetString("cluster.template"), "controlPlaneReplicas"); ok {
+		if field.Min != nil && int(newReplicas) < *field.Min {
+			return fmt.Errorf("control plane replicas must be at least %d", *field.Min)
+		}
+		if field.Max != nil && int(newReplicas) > *field.Max {
+			return fmt.Errorf("control plane replicas must be at most %d", *field.Max)
+		}
+	}
+
+	maxTotalCP := viper.GetInt("cluster.limits.max_total_cp")
+	if maxTotalCP <= 0 {
+		slog.Debug("No total control plane limit configured, skipping limit validation")
+		return nil
+	}
+
+	gvr := m.clusterGVR
+
+	list, err := m.client.Resource(gvr).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/managed-by=chihiro",
+	})
+	if err != nil {
+		slog.Error("Failed to list Chihiro-managed clusters for control plane validation", "error", err)
+		return fmt.Errorf("failed to validate control plane limits: %v", err)
+	}
+
+	totalCP := int32(0)
+	for _, item := range list.Items {
+		if item.GetName() == clusterName && item.GetNamespace() == namespace {
+			totalCP += newReplicas
+			continue
+		}
+		name := item.GetName()
+		if spec, ok := item.Object["spec"].(map[string]interface{}); ok {
+			if topology, ok := spec["topology"].(map[string]interface{}); ok {
+				if controlPlane, ok := topology["controlPlane"].(map[string]interface{}); ok {
+					totalCP += parseReplicas(controlPlane["replicas"], name)
+				}
+			}
+		}
+	}
+
+	slog.Debug("Validating control plane update (Chihiro-managed only)", "cluster", clusterName, "new_cp", newReplicas, "total_cp_after", totalCP, "max_cp", maxTotalCP)
+
+	if totalCP > int32(maxTotalCP) {
+		slog.Warn("Control plane update blocked: total control plane limit exceeded", "cluster", clusterName, "new_cp", newReplicas, "total_would_be", totalCP, "max_cp", maxTotalCP)
+		return fmt.Errorf("total control plane limit exceeded: updating cluster %s to %d control plane replicas would result in %d total, maximum %d allowed", clusterName, newReplicas, totalCP, maxTotalCP)
+	}
+
+	slog.Debug("Control plane update validation passed")
+	return nil
+}
+
+// UpdateClusterControlPlaneReplicas updates the number of control plane
+// replicas in a cluster's topology.
+func (m *Manager) UpdateClusterControlPlaneReplicas(ctx context.Context, clusterName, namespace string, replicas int32) error {
+	slog.Debug("Updating cluster control plane replicas", "cluster", clusterName, "namespace", namespace, "replicas", replicas)
+
+	if err := m.ValidateControlPlaneUpdate(ctx, clusterName, namespace, replicas); err != nil {
+		return err
+	}
+
+	gvr := m.clusterGVR
+
+	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
+	if err != nil {
+		slog.Error("Failed to get cluster for control plane update", "cluster", clusterName, "namespace", namespace, "error", err)
+		return fmt.Errorf("failed to get cluster: %v", err)
+	}
+
+	// Update the control plane replicas in the topology.
+	spec, ok := cluster.Object["spec"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("cluster %s has no spec", clusterName)
+	}
+	topology, ok := spec["topology"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("cluster %s has no topology", clusterName)
+	}
+	controlPlane, ok := topology["controlPlane"].(map[string]interface{})
+	if !ok {
+		controlPlane = make(map[string]interface{})
+		topology["controlPlane"] = controlPlane
+	}
+	controlPlane["replicas"] = int64(replicas)
+
+	_, err = m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{})
+	if err != nil {
+		slog.Error("Failed to update cluster control plane replicas", "cluster", clusterName, "namespace", namespace, "replicas", replicas, "error", err)
+		return fmt.Errorf("failed to update cluster: %v", err)
+	}
+
+	slog.Info("Successfully updated cluster control plane replicas", "cluster", clusterName, "namespace", namespace, "replicas", replicas)
+	return nil
+}
+
 // ValidateVersionUpgrade checks if the new version is valid and newer than current version
 func (m *Manager) ValidateVersionUpgrade(ctx context.Context, clusterName, namespace, newVersion string) error {
 	// Get available versions from config
@@ -669,4 +918,206 @@ func getUsedRangeNumbers(usedRanges map[int]bool) []int {
 		ranges = append(ranges, rangeNum)
 	}
 	return ranges
+}
+
+// injectWorkerGroups replaces the machineDeployments array in the cluster
+// topology with entries generated from the supplied worker groups.
+func (m *Manager) injectWorkerGroups(obj map[string]interface{}, groups []WorkerGroup) error {
+	// Determine the injection path from config; fall back to the default
+	// topology path.
+	injPath := "spec.topology.workers.machineDeployments"
+	for _, inj := range loadInjectionConfig() {
+		if inj.Path != "" && strings.Contains(inj.Path, "machineDeployments") {
+			injPath = inj.Path
+			break
+		}
+	}
+
+	machineDeployments := make([]interface{}, 0, len(groups))
+	for _, wg := range groups {
+		replicas := wg.Replicas
+		if replicas <= 0 {
+			replicas = 1
+		}
+		mdClass := wg.Class
+		if mdClass == "" {
+			mdClass = "default-worker"
+		}
+		md := map[string]interface{}{
+			"class":    mdClass,
+			"name":     wg.Name,
+			"replicas": int64(replicas),
+		}
+		// Inject the workerFlavor variable into the variables.overrides
+		// list of each machine deployment so the OpenStack template picks
+		// up the correct flavor per group.  CAPI expects:
+		//   variables:
+		//     overrides:
+		//       - name: workerFlavor
+		//         value: xlarge
+		if wg.Flavor != "" {
+			md["variables"] = map[string]interface{}{
+				"overrides": []interface{}{
+					map[string]interface{}{
+						"name":  "workerFlavor",
+						"value": wg.Flavor,
+					},
+				},
+			}
+		}
+		machineDeployments = append(machineDeployments, md)
+	}
+
+	setYAMLPath(obj, injPath, machineDeployments)
+	return nil
+}
+
+// GetWorkerGroups extracts the worker groups from a cluster's annotations.
+// Returns nil if no annotation is present.
+func GetWorkerGroups(cluster map[string]interface{}) []WorkerGroup {
+	annotations, _ := cluster["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})
+	raw, ok := annotations["chihiro.io/worker-groups"]
+	if !ok {
+		return nil
+	}
+	var groups []WorkerGroup
+	if err := json.Unmarshal([]byte(raw.(string)), &groups); err != nil {
+		slog.Warn("Failed to parse worker-groups annotation", "error", err)
+		return nil
+	}
+	return groups
+}
+
+// UpdateClusterWorkerGroups replaces the full set of worker groups for a
+// cluster, updating both the Kubernetes resource and the annotation.
+func (m *Manager) UpdateClusterWorkerGroups(ctx context.Context, clusterName, namespace string, groups []WorkerGroup) error {
+	slog.Debug("Updating cluster worker groups", "cluster", clusterName, "namespace", namespace, "groups", len(groups))
+
+	gvr := m.clusterGVR
+
+	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
+	if err != nil {
+		slog.Error("Failed to get cluster for worker groups update", "cluster", clusterName, "namespace", namespace, "error", err)
+		return fmt.Errorf("failed to get cluster: %v", err)
+	}
+
+	// Validate that at least one group has replicas >= 1.
+	totalReplicas := int32(0)
+	for _, wg := range groups {
+		if wg.Replicas < 0 {
+			wg.Replicas = 0
+		}
+		totalReplicas += wg.Replicas
+	}
+
+	// Re-inject worker groups into the topology.
+	if err := m.injectWorkerGroups(cluster.Object, groups); err != nil {
+		return fmt.Errorf("failed to inject worker groups: %v", err)
+	}
+
+	// Update the annotation.
+	annotations := cluster.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	if wgJSON, err := json.Marshal(groups); err == nil {
+		annotations["chihiro.io/worker-groups"] = string(wgJSON)
+	}
+	cluster.SetAnnotations(annotations)
+
+	_, err = m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{})
+	if err != nil {
+		slog.Error("Failed to update cluster worker groups", "cluster", clusterName, "namespace", namespace, "error", err)
+		return fmt.Errorf("failed to update cluster: %v", err)
+	}
+
+	slog.Info("Successfully updated cluster worker groups", "cluster", clusterName, "namespace", namespace, "groups", len(groups), "total_replicas", totalReplicas)
+	return nil
+}
+
+// setYAMLPath sets a value in a nested map using a dot-separated path.
+// Supports numeric indices in brackets for arrays, e.g. "spec.workers[0].replicas".
+func setYAMLPath(obj map[string]interface{}, path string, value interface{}) {
+	parts := parseYAMLPath(path)
+	current := obj
+
+	for i, part := range parts {
+		isLast := i == len(parts)-1
+
+		if idx, arrayIndex, ok := parseArrayIndex(part); ok {
+			// This part has an array index like "machineDeployments[0]"
+			var arr []interface{}
+			if v, exists := current[idx]; exists {
+				arr, _ = v.([]interface{})
+			}
+			if arr == nil {
+				arr = make([]interface{}, 0)
+			}
+
+			index := arrayIndex
+			// Extend array if needed
+			for len(arr) <= index {
+				arr = append(arr, make(map[string]interface{}))
+			}
+
+			if isLast {
+				arr[index] = value
+			} else {
+				if child, ok := arr[index].(map[string]interface{}); ok {
+					current = child
+				} else {
+					child = make(map[string]interface{})
+					arr[index] = child
+					current = child
+				}
+				continue
+			}
+			current[idx] = arr
+			return
+		}
+
+		if isLast {
+			current[part] = value
+			return
+		}
+
+		if v, exists := current[part]; exists {
+			if child, ok := v.(map[string]interface{}); ok {
+				current = child
+			} else {
+				child = make(map[string]interface{})
+				current[part] = child
+				current = child
+			}
+		} else {
+			child := make(map[string]interface{})
+			current[part] = child
+			current = child
+		}
+	}
+}
+
+// parseYAMLPath splits a dot-separated path, handling bracket notation.
+func parseYAMLPath(path string) []string {
+	var parts []string
+	for _, segment := range strings.Split(path, ".") {
+		if segment != "" {
+			parts = append(parts, segment)
+		}
+	}
+	return parts
+}
+
+// parseArrayIndex checks if a part like "foo[2]" has an array index.
+func parseArrayIndex(part string) (string, int, bool) {
+	bracketStart := strings.Index(part, "[")
+	bracketEnd := strings.Index(part, "]")
+	if bracketStart > 0 && bracketEnd > bracketStart {
+		key := part[:bracketStart]
+		idxStr := part[bracketStart+1 : bracketEnd]
+		if idx, err := strconv.Atoi(idxStr); err == nil {
+			return key, idx, true
+		}
+	}
+	return "", 0, false
 }

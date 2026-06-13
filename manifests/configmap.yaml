@@ -8,14 +8,11 @@ data:
       issuer_url: 'https://your-oidc-issuer.com'  # REPLACE with your OIDC issuer URL
       client_id: 'your-client-id'  # REPLACE with your OIDC client ID
       # Set via environment variables: OIDC_CLIENT_SECRET, SESSION_KEY
-      # client_secret: ''  # Use OIDC_CLIENT_SECRET env var
-      # session_key: ''    # Use SESSION_KEY env var (32+ random bytes recommended)
       redirect_url: 'http://chihiro.example.com/auth/callback'  # REPLACE with your callback URL
     redis:
       addr: 'redis:6379'
       username: ''
       # SECURITY: Set via REDIS_PASSWORD environment variable
-      # password: ''  # Use REDIS_PASSWORD env var
       session_ttl: 3600
     cluster:
       domain: 'cluster.local'  # REPLACE with your cluster domain
@@ -26,17 +23,22 @@ data:
         - kube-admin  # REPLACE with your admin groups (full access to all clusters)
       creator_groups:
         - kube-admin  # REPLACE with groups that can create/edit/delete clusters
-        - cluster-creators  # Users in these groups can manage clusters they created or share groups with
+        - cluster-creators
       limits:
-        max_clusters: 2  # Maximum clusters per user
-        max_total_nodes: 2  # Maximum total worker nodes per user
-        max_total_cp: 9  # Maximum total control plane replicas per user
-      # Cluster template as raw YAML string - CUSTOMIZE for your infrastructure
+        max_clusters: 2
+        max_total_nodes: 2
+        max_total_cp: 9
+      injections:
+        name: metadata.name
+        version: spec.topology.version
+        serviceDomain: spec.clusterNetwork.serviceDomain
+        nodes: spec.topology.workers.machineDeployments[0].replicas
+        controlPlaneReplicas: spec.topology.controlPlane.replicas
       template: |
         apiVersion: cluster.x-k8s.io/v1beta1
         kind: Cluster
         metadata:
-          name: PLACEHOLDER_NAME
+          name: ignore
           namespace: default
           labels:
             managed-by: chihiro
@@ -44,20 +46,47 @@ data:
           clusterNetwork:
             pods:
               cidrBlocks:
-                - 172.16.0.0/16
-            serviceDomain: PLACEHOLDER_SERVICE_DOMAIN
+                - {{ chihiro.podCIDR }}
+            serviceDomain: ignore
             services:
               cidrBlocks:
-                - 172.17.0.0/16
+                - {{ chihiro.serviceCIDR }}
           topology:
             class: default  # REPLACE with your cluster class
             controlPlane:
-              replicas: PLACEHOLDER_CP_REPLICAS
-            version: PLACEHOLDER_VERSION
+              replicas: 0
+            version: "0.0.0"
             workers:
               machineDeployments:
                 - class: default-worker
                   name: worker
-                  replicas: PLACEHOLDER_NODES
-      # Field mapping: specify where to inject the node count
-      node_count_path: 'spec.topology.workers.machineDeployments[0].replicas'
+                  replicas: 0
+      parameters:
+        podCIDR:
+          label: "Pod CIDR"
+          description: "CIDR block for pod networking"
+          type: string
+          default: "172.16.0.0/16"
+        serviceCIDR:
+          label: "Service CIDR"
+          description: "CIDR block for service networking"
+          type: string
+          default: "172.17.0.0/16"
+        workerFlavor:
+          label: "Worker Flavor"
+          description: "OpenStack flavor for worker nodes"
+          type: select
+          options:
+            - xmedium
+            - medium
+            - large
+          default: xmedium
+        externalNetworkId:
+          label: "External Network ID"
+          description: "OpenStack external network UUID"
+          type: string
+        managedSubnetCIDR:
+          label: "Managed Subnet CIDR"
+          description: "CIDR block for the managed subnet"
+          type: string
+          default: "192.168.1.0/24"

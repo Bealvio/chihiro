@@ -258,6 +258,11 @@
             color: var(--log-color-error);
         }
 
+        .cluster-status.pending {
+            background-color: rgba(234, 161, 0, 0.12);
+            color: var(--log-color-warning, #b06d00);
+        }
+
         .cluster-details {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -282,6 +287,45 @@
         .detail-value {
             color: var(--md-sys-color-on-surface);
             font-weight: 600;
+        }
+
+        .more-details-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--md-sys-color-primary);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            padding: 4px 0;
+        }
+
+        .more-details-toggle .material-symbols-outlined {
+            font-size: 1.1rem;
+            transition: transform 0.2s ease;
+        }
+
+        .more-details-toggle.expanded .material-symbols-outlined {
+            transform: rotate(180deg);
+        }
+
+        .more-details {
+            display: none;
+            margin-top: 8px;
+            padding-top: 12px;
+            border-top: 1px solid var(--md-sys-color-outline-variant, rgba(0,0,0,0.1));
+        }
+
+        .more-details.expanded {
+            display: block;
+        }
+
+        .more-details .detail-item {
+            margin-bottom: 10px;
+            word-break: break-word;
         }
 
         .cluster-groups {
@@ -375,7 +419,13 @@
             padding: 32px;
             max-width: 500px;
             width: 90%;
+            max-height: 92vh;
+            overflow-y: auto;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .modal.modal-wide {
+            max-width: 620px;
         }
 
         .modal h3 {
@@ -386,13 +436,13 @@
         }
 
         .form-group {
-            margin-bottom: 24px;
+            margin-bottom: 16px;
         }
 
         .form-group label {
             display: block;
-            margin-bottom: 8px;
-            font-size: 0.9rem;
+            margin-bottom: 6px;
+            font-size: 0.85rem;
             font-weight: 500;
             color: var(--md-sys-color-on-surface-variant);
         }
@@ -417,7 +467,23 @@
             display: flex;
             gap: 16px;
             justify-content: flex-end;
-            margin-top: 32px;
+            margin-top: 24px;
+            padding-top: 16px;
+            border-top: 1px solid var(--md-sys-color-outline-variant);
+            position: sticky;
+            bottom: 0;
+            background: var(--md-sys-color-surface-container-highest);
+            margin-left: -32px;
+            margin-right: -32px;
+            margin-bottom: -32px;
+            padding-left: 32px;
+            padding-right: 32px;
+            padding-bottom: 24px;
+            border-radius: 0 0 16px 16px;
+        }
+
+        form {
+            padding-bottom: 24px;
         }
 
         .edit-btn {
@@ -436,6 +502,58 @@
 
         .edit-btn:hover {
             background-color: rgba(63, 81, 181, 0.08);
+        }
+
+        /* Worker Groups */
+        .worker-group-row {
+            background-color: rgba(63, 81, 181, 0.04);
+            border: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+        }
+
+        .wg-header {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .wg-header input[type="text"] {
+            flex: 1;
+            padding: 6px 10px;
+            border: 1px solid var(--md-sys-color-outline);
+            border-radius: 6px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .wg-details {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .wg-details select,
+        .wg-details input {
+            flex: 1;
+            padding: 5px 8px;
+            border: 1px solid var(--md-sys-color-outline);
+            border-radius: 6px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+        }
+
+        .wg-details .wg-replicas {
+            flex: 0 0 60px;
+        }
+
+        .wg-details .wg-label {
+            font-size: 0.75rem;
+            color: var(--md-sys-color-on-surface-variant);
+            flex: 0 0 auto;
         }
 
         /* Responsive */
@@ -529,7 +647,7 @@
 
     <!-- Create Cluster Modal -->
     <div class="modal-overlay" id="createModalOverlay">
-        <div class="modal">
+        <div class="modal modal-wide">
             <h3>Create New Cluster</h3>
             <form id="createClusterForm">
                 <div class="form-group">
@@ -542,17 +660,22 @@
                         <option value="">Select version...</option>
                     </select>
                 </div>
+                <div id="dynamicParamsContainer"></div>
                 <div class="form-group">
-                    <label for="clusterNodes">Number of Nodes</label>
-                    <input type="number" id="clusterNodes" min="1" value="1" required>
-                    <small id="limitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
-                        Loading limits...
-                    </small>
+                    <label>Worker Groups</label>
+                    <div id="createWorkerGroups"></div>
+                    <button type="button" class="btn btn-text btn-small" onclick="addCreateWorkerGroup()" style="margin-top: 8px;">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">add</span>
+                        Add Group
+                    </button>
                 </div>
                 <div class="form-group">
                     <label for="clusterControlPlaneReplicas">Control Plane Replicas</label>
                     <input type="number" id="clusterControlPlaneReplicas" min="1" value="3" required>
                 </div>
+                <small id="limitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 12px;">
+                    Loading limits...
+                </small>
                 <div class="form-group" id="groupsSection">
                     <label for="clusterGroups">Access Groups</label>
                     <select id="clusterGroups" multiple>
@@ -595,22 +718,47 @@
         </div>
     </div>
 
-    <!-- Edit Nodes Modal -->
-    <div class="modal-overlay" id="editNodesModalOverlay">
-        <div class="modal">
-            <h3>Edit Cluster Nodes</h3>
-            <p>Edit node count for cluster <strong id="editNodesClusterName"></strong></p>
-            <form id="editNodesForm">
+    <!-- Edit Worker Groups Modal -->
+    <div class="modal-overlay" id="editWorkerGroupsModalOverlay">
+        <div class="modal modal-wide">
+            <h3>Edit Worker Groups</h3>
+            <p>Edit worker groups for cluster <strong id="editWorkerGroupsClusterName"></strong></p>
+            <form id="editWorkerGroupsForm">
                 <div class="form-group">
-                    <label for="editClusterNodes">Number of Nodes</label>
-                    <input type="number" id="editClusterNodes" min="1" max="10" required>
-                    <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
-                        Minimum: 1 node
+                    <label>Worker Groups</label>
+                    <div id="editWorkerGroupsList"></div>
+                    <button type="button" class="btn btn-text btn-small" onclick="addEditWorkerGroup()" style="margin-top: 8px;">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">add</span>
+                        Add Group
+                    </button>
+                </div>
+                <small id="editWorkerGroupsLimitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 12px;">
+                    Loading limits...
+                </small>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditWorkerGroupsModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Update Worker Groups</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Control Plane Modal -->
+    <div class="modal-overlay" id="editControlPlaneModalOverlay">
+        <div class="modal">
+            <h3>Edit Control Plane</h3>
+            <p>Edit control plane replicas for cluster <strong id="editControlPlaneClusterName"></strong></p>
+            <form id="editControlPlaneForm">
+                <div class="form-group">
+                    <label for="editClusterControlPlane">Control Plane Replicas</label>
+                    <input type="number" id="editClusterControlPlane" min="1" max="9" required>
+                    <small id="editControlPlaneHint" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Minimum: 1 replica
                     </small>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="btn btn-text" onclick="closeEditNodesModal()">Cancel</button>
-                    <button type="submit" class="btn btn-filled">Update Nodes</button>
+                    <button type="button" class="btn btn-text" onclick="closeEditControlPlaneModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Update Control Plane</button>
                 </div>
             </form>
         </div>
@@ -645,8 +793,8 @@
         <div class="modal">
             <h3>Delete Cluster</h3>
             <p>Are you sure you want to delete cluster <strong id="deleteClusterName"></strong>?</p>
-            <p style="color: var(--md-sys-color-error); font-size: 0.9rem;">This action cannot be undone.</p>
-            <div class="form-actions">
+            <p style="color: var(--md-sys-color-error); font-size: 0.9rem; margin-bottom: 32px; position: relative; z-index: 2;">This action cannot be undone.</p>
+            <div style="display: flex; gap: 16px; justify-content: flex-end;">
                 <button type="button" class="btn btn-text" onclick="closeDeleteModal()">Cancel</button>
                 <button type="button" class="btn danger" onclick="confirmDelete()">Delete Cluster</button>
             </div>
@@ -663,6 +811,10 @@
         let isCreatorGroupMember = false;
         let deleteClusterData = null;
         let editClusterData = null;
+        let clusterParameters = [];
+        let editableFields = {}; // key -> { enabled, min, max } from /api/cluster/editable
+        let workerFlavors = [];  // available OpenStack flavors from /api/cluster/worker-flavors
+        let workerClasses = [];  // available machine deployment classes from /api/cluster/worker-classes
 
         // Initialize everything when page loads
         document.addEventListener('DOMContentLoaded', function() {
@@ -670,6 +822,10 @@
                 loadVersions();
                 loadUserGroups();
                 loadUserPermissions();
+                loadClusterParameters();
+                loadWorkerFlavors();
+                loadWorkerClasses();
+                loadEditableFields();
                 loadConfig();
                 connectWebSocket();
                 loadClusters();
@@ -852,8 +1008,97 @@
                 });
         }
 
+        // Build the human label for a parameter key from the discovered
+        // parameter metadata, falling back to a humanized key.
+        function parameterLabel(key) {
+            const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+            if (meta && meta.label) return meta.label;
+            return key
+                .replace(/[_-]/g, ' ')
+                .replace(/([a-z])([A-Z])/g, '$1 $2')
+                .replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        // Tracks which "More details" panels are open so the expanded state
+        // survives full re-renders (the cluster list is rebuilt on every
+        // websocket/health-check update).
+        const expandedDetails = new Set();
+
+        // Parameters already surfaced elsewhere on the card (main details grid
+        // and groups section), excluded from "More details" to avoid duplicates.
+        const MORE_DETAILS_EXCLUDE = new Set([
+            'podcidr', 'servicecidr', 'servicedomain',
+            'version', 'nodes', 'controlplanereplicas', 'groups', 'name', 'iprange',
+        ]);
+
+        // Render the collapsible "More details" section listing every parameter
+        // that was set for the cluster at creation time.
+        function renderMoreDetails(cluster) {
+            const params = cluster.parameters || {};
+            const keys = Object.keys(params)
+                .filter(key => !MORE_DETAILS_EXCLUDE.has(key.toLowerCase()))
+                .sort();
+            if (keys.length === 0) return '';
+
+            const id = `more-${cluster.namespace}-${cluster.name}`;
+            const isExpanded = expandedDetails.has(id);
+            const rows = keys.map(key => `
+                <div class="detail-item">
+                    <div class="detail-label">${escapeHtml(parameterLabel(key))}</div>
+                    <div class="detail-value">${escapeHtml(params[key])}</div>
+                </div>
+            `).join('');
+
+            return `
+                <button class="more-details-toggle ${isExpanded ? 'expanded' : ''}" onclick="toggleMoreDetails('${id}', this)">
+                    <span>${isExpanded ? 'Hide details' : 'More details'}</span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="more-details ${isExpanded ? 'expanded' : ''}" id="${id}">
+                    ${rows}
+                </div>
+            `;
+        }
+
+        function toggleMoreDetails(id, btn) {
+            const panel = document.getElementById(id);
+            if (!panel) return;
+            const expanded = panel.classList.toggle('expanded');
+            btn.classList.toggle('expanded', expanded);
+            btn.querySelector('span').textContent = expanded ? 'Hide details' : 'More details';
+            // Persist state so re-renders keep the panel open/closed.
+            if (expanded) {
+                expandedDetails.add(id);
+            } else {
+                expandedDetails.delete(id);
+            }
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Map a CAPI cluster phase to a status badge style.
+        function phaseStatusClass(phase) {
+            switch ((phase || '').toLowerCase()) {
+                case 'provisioned':
+                    return 'ready';
+                case 'failed':
+                case 'deleting':
+                    return 'not-ready';
+                default: // Pending, Provisioning, Unknown, ...
+                    return 'pending';
+            }
+        }
+
         // Update clusters display
         function updateClusters(clusters) {
+            currentClustersList = clusters || [];
             const container = document.getElementById('clustersContainer');
             const emptyState = document.getElementById('emptyState');
 
@@ -868,8 +1113,8 @@
 
             container.innerHTML = clusters.map(cluster => {
                 const age = getAge(cluster.createdAt);
-                const statusClass = cluster.ready ? 'ready' : 'not-ready';
-                const statusText = cluster.ready ? 'Ready' : 'Not Ready';
+                const statusText = cluster.available ? 'Available' : (cluster.phase || 'Unknown');
+                const statusClass = cluster.available ? 'ready' : phaseStatusClass(cluster.phase);
 
                 return `
                     <div class="cluster-card">
@@ -882,16 +1127,23 @@
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Version
-                                    ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                    ${canEditField(cluster, 'version') ? `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
                                 <div class="detail-value">${cluster.version || 'N/A'}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">
-                                    Nodes
-                                    ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditNodesModal('${cluster.name}', '${cluster.namespace}', ${cluster.nodes || 0})"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                    Worker Groups
+                                    ${canEditField(cluster, 'workerGroups') ? `<button class="edit-btn" onclick="openEditWorkerGroupsModal('${cluster.name}', '${cluster.namespace}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
-                                <div class="detail-value">${cluster.nodes || 0}</div>
+                                <div class="detail-value">${formatWorkerGroups(cluster.workerGroups, cluster.nodes)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">
+                                    Control Plane
+                                    ${canEditField(cluster, 'controlPlaneReplicas') ? `<button class="edit-btn" onclick="openEditControlPlaneModal('${cluster.name}', '${cluster.namespace}', ${cluster.controlPlaneReplicas || 0})"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                </div>
+                                <div class="detail-value">${cluster.controlPlaneReplicas || 0}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Age</div>
@@ -915,10 +1167,12 @@
                             </div>
                         </div>
 
+                        ${renderMoreDetails(cluster)}
+
                         <div class="cluster-groups">
                             <div class="groups-label">
                                 Access Groups
-                                ${canEditCluster(cluster) ? `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                ${canEditField(cluster, 'groups') ? `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                             </div>
                             <div class="group-chips">
                                 ${cluster.groups && cluster.groups.length > 0 ?
@@ -954,9 +1208,11 @@
 
         // Update stats
         function updateStats(clusters) {
-            const total = clusters ? clusters.length : 0;
-            const ready = clusters ? clusters.filter(c => c.ready).length : 0;
-            const pending = total - ready;
+            const list = clusters || [];
+            const total = list.length;
+            const ready = list.filter(c => c.ready).length;
+            // Pending = anything that is neither ready nor in the Provisioned phase.
+            const pending = list.filter(c => !c.ready && (c.phase || '').toLowerCase() !== 'provisioned').length;
 
             document.getElementById('totalClusters').textContent = total;
             document.getElementById('readyClusters').textContent = ready;
@@ -1012,6 +1268,13 @@
             console.log('Opening create modal, isAdmin:', isAdmin);
             document.getElementById('createModalOverlay').style.display = 'flex';
             loadLimitsInfo(); // Load and display limits
+            renderDynamicParameters();
+
+            // Initialize worker groups editor with one default group
+            document.getElementById('createWorkerGroups').innerHTML = '';
+            createGroupIndex = 0;
+            addCreateWorkerGroup('worker', 'default-worker', '', 1);
+
             if (isAdmin) {
                 console.log('Admin user - showing text input');
                 document.getElementById('groupsSection').style.display = 'none';
@@ -1067,17 +1330,157 @@
 
         let editNodesData = null;
 
-        function openEditNodesModal(name, namespace, currentNodes) {
-            console.log('Opening edit nodes modal for cluster:', name, 'current nodes:', currentNodes);
-            editNodesData = { name, namespace };
-            document.getElementById('editNodesClusterName').textContent = name;
-            document.getElementById('editClusterNodes').value = currentNodes;
-            document.getElementById('editNodesModalOverlay').style.display = 'flex';
+        function formatWorkerGroups(groups, totalNodes) {
+            if (!groups || groups.length === 0) {
+                return totalNodes || 0;
+            }
+            return groups.map(g => `${g.replicas}x ${g.flavor} (${g.class || 'default-worker'})`).join(', ');
         }
 
-        function closeEditNodesModal() {
-            document.getElementById('editNodesModalOverlay').style.display = 'none';
+        function openEditWorkerGroupsModal(name, namespace) {
+            editNodesData = { name, namespace };
+            document.getElementById('editWorkerGroupsClusterName').textContent = name;
+
+            // Find the cluster to get current worker groups
+            const cluster = currentClustersList.find(c => c.name === name && c.namespace === namespace);
+            const groups = (cluster && cluster.workerGroups) ? cluster.workerGroups : [];
+
+            const container = document.getElementById('editWorkerGroupsList');
+            container.innerHTML = '';
+            if (groups.length === 0) {
+                addEditWorkerGroup();
+            } else {
+                groups.forEach(g => addEditWorkerGroup(g.name, g.class, g.flavor, g.replicas));
+            }
+
+            document.getElementById('editWorkerGroupsModalOverlay').style.display = 'flex';
+
+            // Load limits info
+            fetch('/api/limits', { credentials: 'include' })
+                .then(r => r.json())
+                .then(data => {
+                    const el = document.getElementById('editWorkerGroupsLimitsInfo');
+                    if (data.maxTotalNodes > 0) {
+                        el.textContent = `Available: ${data.availableNodes} nodes | Max: ${data.maxTotalNodes} nodes (${data.currentTotalNodes} in use)`;
+                    } else {
+                        el.textContent = 'No node limits configured';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('editWorkerGroupsLimitsInfo').textContent = '';
+                });
+        }
+
+        function closeEditWorkerGroupsModal() {
+            document.getElementById('editWorkerGroupsModalOverlay').style.display = 'none';
             editNodesData = null;
+        }
+
+        let createGroupIndex = 0;
+
+        function addCreateWorkerGroup(name, cls, flavor, replicas) {
+            const container = document.getElementById('createWorkerGroups');
+            const idx = createGroupIndex++;
+            const div = document.createElement('div');
+            div.className = 'worker-group-row';
+            div.id = `create-wg-${idx}`;
+            div.innerHTML = workerGroupRowHTML(idx, name || '', cls || '', flavor || '', replicas || 1, 'create');
+            container.appendChild(div);
+        }
+
+        function removeCreateWorkerGroup(idx) {
+            const el = document.getElementById(`create-wg-${idx}`);
+            if (el) el.remove();
+        }
+
+        let editGroupIndex = 0;
+
+        function addEditWorkerGroup(name, cls, flavor, replicas) {
+            const container = document.getElementById('editWorkerGroupsList');
+            const idx = editGroupIndex++;
+            const div = document.createElement('div');
+            div.className = 'worker-group-row';
+            div.id = `edit-wg-${idx}`;
+            div.innerHTML = workerGroupRowHTML(idx, name || '', cls || '', flavor || '', replicas || 1, 'edit');
+            container.appendChild(div);
+        }
+
+        function removeEditWorkerGroup(idx) {
+            const el = document.getElementById(`edit-wg-${idx}`);
+            if (el) el.remove();
+        }
+
+        function workerGroupRowHTML(idx, name, cls, flavor, replicas, prefix) {
+            const classInput = workerClasses.length > 0
+                ? `<select id="${prefix}-wg-class-${idx}" class="wg-class">${workerClasses.map(c => `<option value="${c}" ${c === cls ? 'selected' : ''}>${c}</option>`).join('')}</select>`
+                : `<input type="text" id="${prefix}-wg-class-${idx}" class="wg-class" value="${escapeHtml(cls || 'default-worker')}" placeholder="default-worker">`;
+            const flavorInput = workerFlavors.length > 0
+                ? `<select id="${prefix}-wg-flavor-${idx}" class="wg-flavor">${workerFlavors.map(f => `<option value="${f}" ${f === flavor ? 'selected' : ''}>${f}</option>`).join('')}</select>`
+                : `<input type="text" id="${prefix}-wg-flavor-${idx}" class="wg-flavor" value="${escapeHtml(flavor)}" placeholder="e.g. xmedium">`;
+            return `
+                <div class="wg-header">
+                    <input type="text" id="${prefix}-wg-name-${idx}" class="wg-name" value="${escapeHtml(name)}" placeholder="Group name">
+                    <button type="button" class="edit-btn" onclick="remove${prefix === 'create' ? 'Create' : 'Edit'}WorkerGroup(${idx})" style="color: var(--md-sys-color-error); border-color: var(--md-sys-color-error); flex: 0 0 auto;">
+                        <span class="material-symbols-outlined">delete</span>
+                    </button>
+                </div>
+                <div class="wg-details">
+                    <span class="wg-label">Class</span>
+                    ${classInput}
+                    <span class="wg-label">Flavor</span>
+                    ${flavorInput}
+                    <span class="wg-label">x</span>
+                    <input type="number" id="${prefix}-wg-replicas-${idx}" class="wg-replicas" value="${replicas}" min="1" max="10">
+                </div>
+            `;
+        }
+
+        function collectWorkerGroups(prefix) {
+            const container = document.getElementById(prefix === 'create' ? 'createWorkerGroups' : 'editWorkerGroupsList');
+            const rows = container.querySelectorAll('.worker-group-row');
+            const groups = [];
+            rows.forEach(row => {
+                const name = row.querySelector('.wg-name').value.trim();
+                const cls = row.querySelector('.wg-class').value.trim();
+                const flavor = row.querySelector('.wg-flavor').value.trim();
+                const replicas = parseInt(row.querySelector('.wg-replicas').value) || 1;
+                if (name) {
+                    groups.push({ name, class: cls, flavor, replicas });
+                }
+            });
+            return groups;
+        }
+
+        let currentClustersList = [];
+
+        let editControlPlaneData = null;
+
+        function openEditControlPlaneModal(name, namespace, currentReplicas) {
+            editControlPlaneData = { name, namespace };
+            document.getElementById('editControlPlaneClusterName').textContent = name;
+
+            const input = document.getElementById('editClusterControlPlane');
+            const cfg = editableFields['controlplanereplicas'] || {};
+            const min = (cfg.min != null) ? cfg.min : 1;
+            input.min = min;
+            if (cfg.max != null) {
+                input.max = cfg.max;
+            } else {
+                input.removeAttribute('max');
+            }
+            input.value = currentReplicas;
+
+            const hint = document.getElementById('editControlPlaneHint');
+            hint.textContent = (cfg.max != null)
+                ? `Allowed range: ${min}–${cfg.max} replicas`
+                : `Minimum: ${min} replica${min === 1 ? '' : 's'}`;
+
+            document.getElementById('editControlPlaneModalOverlay').style.display = 'flex';
+        }
+
+        function closeEditControlPlaneModal() {
+            document.getElementById('editControlPlaneModalOverlay').style.display = 'none';
+            editControlPlaneData = null;
         }
 
         let editVersionData = null;
@@ -1168,6 +1571,7 @@
                         option.textContent = version;
                         select.appendChild(option);
                     });
+                    select.addEventListener('change', renderDynamicParameters);
                 })
                 .catch(error => console.error('Error loading versions:', error));
         }
@@ -1179,7 +1583,6 @@
                 .then(response => response.json())
                 .then(data => {
                     const limitsEl = document.getElementById('limitsInfo');
-                    const nodesInput = document.getElementById('clusterNodes');
                     const cpInput = document.getElementById('clusterControlPlaneReplicas');
 
                     if (data.maxClusters > 0 || data.maxTotalNodes > 0 || data.maxTotalCP > 0) {
@@ -1192,16 +1595,11 @@
                         if (data.maxTotalNodes > 0) {
                             limitsText.push(`Total nodes: ${data.currentTotalNodes}/${data.maxTotalNodes}`);
                             limitsText.push(`Available: ${data.availableNodes}`);
-
-                            // Set max attribute on nodes input
-                            nodesInput.max = data.availableNodes;
                         }
 
                         if (data.maxTotalCP > 0) {
                             limitsText.push(`Control plane: ${data.currentTotalCP}/${data.maxTotalCP}`);
-
-                            // Set max attribute on control plane replicas input
-                            cpInput.max = data.availableCP;
+                            if (cpInput) cpInput.max = data.availableCP;
                         }
 
                         limitsEl.textContent = limitsText.join(' | ');
@@ -1209,7 +1607,7 @@
                         // Check if at cluster limit
                         if (data.maxClusters > 0 && data.currentClusters >= data.maxClusters) {
                             limitsEl.style.color = 'var(--md-sys-color-error)';
-                            limitsEl.textContent = `⚠️ Cluster limit reached (${data.currentClusters}/${data.maxClusters}). Cannot create more clusters.`;
+                            limitsEl.textContent = `Cluster limit reached (${data.currentClusters}/${data.maxClusters}). Cannot create more clusters.`;
                         }
                     } else {
                         limitsEl.textContent = 'No limits configured';
@@ -1275,13 +1673,152 @@
             }
         }
 
+        function loadClusterParameters() {
+            fetch('/api/cluster/parameters', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(params => {
+                    clusterParameters = params || [];
+                })
+                .catch(error => {
+                    console.error('Error loading cluster parameters:', error);
+                    clusterParameters = [];
+                });
+        }
+
+        function loadWorkerFlavors() {
+            fetch('/api/cluster/worker-flavors', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    workerFlavors = data.flavors || [];
+                })
+                .catch(error => {
+                    console.error('Error loading worker flavors:', error);
+                    workerFlavors = [];
+                });
+        }
+
+        function loadWorkerClasses() {
+            fetch('/api/cluster/worker-classes', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    workerClasses = data.classes || [];
+                })
+                .catch(error => {
+                    console.error('Error loading worker classes:', error);
+                    workerClasses = [];
+                });
+        }
+
+        function loadEditableFields() {
+            return fetch('/api/cluster/editable', {
+                credentials: 'include'
+            })
+                .then(response => response.json())
+                .then(fields => {
+                    editableFields = {};
+                    // Keys may come back in either casing (template tokens keep
+                    // their original casing, built-ins are lowercased by config
+                    // loading), so index by lowercase for robust lookup.
+                    (fields || []).forEach(f => { editableFields[f.key.toLowerCase()] = f; });
+                    // Re-render to apply edit-button visibility once config arrives.
+                    if (typeof loadClusters === 'function') loadClusters();
+                })
+                .catch(error => {
+                    console.error('Error loading editable fields:', error);
+                    editableFields = {};
+                });
+        }
+
+        // A field's edit button shows only when the user can modify the cluster
+        // AND the field is opt-in enabled in config.
+        function isFieldEditable(field) {
+            const f = editableFields[field.toLowerCase()];
+            return !!(f && f.enabled);
+        }
+
+        function canEditField(cluster, field) {
+            return canEditCluster(cluster) && isFieldEditable(field);
+        }
+
+        function resolveParameterValue(value, builtins) {
+            if (!value) return value;
+            return value.replace(/\{\{\s*chihiro\.(\w+)\s*\}\}/g, function(match, key) {
+                return builtins[key.toLowerCase()] || match;
+            });
+        }
+
+        function renderDynamicParameters() {
+            const container = document.getElementById('dynamicParamsContainer');
+            container.innerHTML = '';
+            if (!clusterParameters || clusterParameters.length === 0) return;
+
+            const builtins = {
+                version: document.getElementById('clusterVersion').value || '',
+            };
+
+            clusterParameters.forEach(p => {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+
+                const label = document.createElement('label');
+                label.setAttribute('for', 'param_' + p.key);
+                label.textContent = p.label + (p.required ? ' *' : '');
+                group.appendChild(label);
+
+                const resolvedDefault = resolveParameterValue(p.default, builtins);
+
+                let input;
+                if (p.type === 'select' && p.options && p.options.length > 0) {
+                    input = document.createElement('select');
+                    input.id = 'param_' + p.key;
+                    if (!p.required) {
+                        const emptyOpt = document.createElement('option');
+                        emptyOpt.value = '';
+                        emptyOpt.textContent = 'Select...';
+                        input.appendChild(emptyOpt);
+                    }
+                    p.options.forEach(opt => {
+                        const option = document.createElement('option');
+                        option.value = opt;
+                        option.textContent = opt;
+                        if (opt === resolvedDefault) option.selected = true;
+                        input.appendChild(option);
+                    });
+                } else {
+                    input = document.createElement('input');
+                    input.type = p.type === 'number' ? 'number' : 'text';
+                    input.id = 'param_' + p.key;
+                    input.placeholder = resolvedDefault || '';
+                    if (resolvedDefault) input.value = resolvedDefault;
+                    if (p.type === 'number') input.min = '0';
+                }
+                if (p.required) input.required = true;
+                group.appendChild(input);
+
+                if (p.description) {
+                    const small = document.createElement('small');
+                    small.style.color = 'var(--md-sys-color-on-surface-variant)';
+                    small.style.fontSize = '0.8rem';
+                    small.textContent = p.description;
+                    group.appendChild(small);
+                }
+
+                container.appendChild(group);
+            });
+        }
+
         // Form submissions
         document.getElementById('createClusterForm').addEventListener('submit', function(e) {
             e.preventDefault();
 
             const name = document.getElementById('clusterName').value;
             const version = document.getElementById('clusterVersion').value;
-            const nodes = parseInt(document.getElementById('clusterNodes').value);
             const controlPlaneReplicas = parseInt(document.getElementById('clusterControlPlaneReplicas').value);
             let groups = '';
 
@@ -1292,9 +1829,10 @@
                 groups = selectedOptions.map(option => option.value).join(',');
             }
 
-            // Validate node count
-            if (nodes < 1) {
-                alert('Node count must be at least 1');
+            // Collect worker groups
+            const workerGroups = collectWorkerGroups('create');
+            if (workerGroups.length === 0) {
+                alert('At least one worker group is required');
                 return;
             }
 
@@ -1310,11 +1848,22 @@
                 return;
             }
 
+            // Collect dynamic template parameters
+            const parameters = {};
+            clusterParameters.forEach(p => {
+                const el = document.getElementById('param_' + p.key);
+                if (el && el.value) {
+                    parameters[p.key] = el.value;
+                } else if (p.default) {
+                    parameters[p.key] = p.default;
+                }
+            });
+
             fetch('/api/clusters', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, version, nodes, controlPlaneReplicas, groups })
+                body: JSON.stringify({ name, version, controlPlaneReplicas, groups, workerGroups, parameters })
             })
             .then(response => {
                 if (response.ok) {
@@ -1388,40 +1937,76 @@
             });
         });
 
-        document.getElementById('editNodesForm').addEventListener('submit', function(e) {
+        document.getElementById('editWorkerGroupsForm').addEventListener('submit', function(e) {
             e.preventDefault();
 
             if (!editNodesData) return;
 
-            const nodes = parseInt(document.getElementById('editClusterNodes').value);
-
-            if (nodes < 1) {
-                alert('Node count must be at least 1');
+            const workerGroups = collectWorkerGroups('edit');
+            if (workerGroups.length === 0) {
+                alert('At least one worker group is required');
                 return;
             }
 
-            fetch(`/api/clusters/${editNodesData.name}/nodes`, {
+            fetch(`/api/clusters/${editNodesData.name}/worker-groups`, {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     namespace: editNodesData.namespace,
-                    nodes: nodes
+                    workerGroups: workerGroups
                 })
             })
             .then(response => {
                 if (response.ok) {
-                    closeEditNodesModal();
+                    closeEditWorkerGroupsModal();
                     loadClusters(); // Refresh clusters
                 } else {
                     return response.json().then(data => {
-                        throw new Error(data.error || 'Failed to update node count');
+                        throw new Error(data.error || 'Failed to update worker groups');
                     });
                 }
             })
             .catch(error => {
-                console.error('Error updating nodes:', error);
-                alert('Failed to update node count: ' + error.message);
+                console.error('Error updating worker groups:', error);
+                alert('Failed to update worker groups: ' + error.message);
+            });
+        });
+
+        document.getElementById('editControlPlaneForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            if (!editControlPlaneData) return;
+
+            const replicas = parseInt(document.getElementById('editClusterControlPlane').value);
+
+            if (isNaN(replicas) || replicas < 1) {
+                alert('Control plane replicas must be at least 1');
+                return;
+            }
+
+            fetch(`/api/clusters/${editControlPlaneData.name}/control-plane`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    namespace: editControlPlaneData.namespace,
+                    controlPlaneReplicas: replicas
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeEditControlPlaneModal();
+                    loadClusters();
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to update control plane replicas');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error updating control plane replicas:', error);
+                alert('Failed to update control plane replicas: ' + error.message);
             });
         });
 

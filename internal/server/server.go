@@ -99,13 +99,18 @@ func (s *Server) setupRoutes() {
 	protected.DELETE("/api/clusters/:name", s.handleDeleteCluster)
 	protected.PUT("/api/clusters/:name/groups", s.handleEditClusterGroups)
 	protected.PUT("/api/clusters/:name/nodes", s.handleEditClusterNodes)
+	protected.PUT("/api/clusters/:name/worker-groups", s.handleEditWorkerGroups)
+	protected.PUT("/api/clusters/:name/control-plane", s.handleEditClusterControlPlane)
 	protected.PUT("/api/clusters/:name/version", s.handleEditClusterVersion)
 	protected.GET("/api/clusters/:name/kubeconfig", s.handleDownloadKubeconfig)
-	protected.GET("/api/ip-ranges/next", s.handleNextIPRange)
 	protected.GET("/api/versions", s.handleGetVersions)
 	protected.GET("/api/user/groups", s.handleGetUserGroups)
 	protected.GET("/api/user/permissions", s.handleGetUserPermissions)
 	protected.GET("/api/limits", s.handleGetLimits)
+	protected.GET("/api/cluster/parameters", s.handleGetClusterParameters)
+	protected.GET("/api/cluster/editable", s.handleGetEditableFields)
+	protected.GET("/api/cluster/worker-flavors", s.handleGetWorkerFlavors)
+	protected.GET("/api/cluster/worker-classes", s.handleGetWorkerClasses)
 	protected.GET("/ws", s.handleWebSocket)
 }
 
@@ -371,7 +376,15 @@ func (s *Server) handleDeleteCluster(c *gin.Context) {
 
 	name := c.Param("name")
 
+	var bodyReq struct {
+		Namespace string `json:"namespace"`
+	}
+	_ = c.ShouldBindJSON(&bodyReq)
+
 	namespace := c.Query("namespace")
+	if namespace == "" {
+		namespace = bodyReq.Namespace
+	}
 	if namespace == "" {
 		namespace = "capi-system"
 	}
@@ -417,22 +430,6 @@ func (s *Server) handleDeleteCluster(c *gin.Context) {
 	})
 
 	slog.Info("Cluster deletion API response sent", "username", user.Username, "cluster_name", name, "namespace", namespace, "status", "deleted")
-}
-
-func (s *Server) handleNextIPRange(c *gin.Context) {
-	user, _ := auth.GetUserFromContext(c.Request.Context())
-	slog.Debug("Getting next available IP range", "username", getUsernameOrAnon(user))
-
-	ipRange, err := s.manager.GetNextAvailableIPRange(c.Request.Context())
-	if err != nil {
-		slog.Error("Failed to get next available IP range", "username", getUsernameOrAnon(user), "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	slog.Debug("Returning next available IP range", "username", getUsernameOrAnon(user), "ip_range", ipRange)
-
-	c.JSON(http.StatusOK, gin.H{"range": ipRange})
 }
 
 func (s *Server) handleDownloadKubeconfig(c *gin.Context) {
@@ -620,11 +617,66 @@ func (s *Server) handleGetLimits(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleGetClusterParameters(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	templateStr := viper.GetString("cluster.template")
+	params := cluster.DiscoverParameters(templateStr)
+
+	slog.Debug("Serving cluster parameters", "username", user.Username, "param_count", len(params))
+	c.JSON(http.StatusOK, params)
+}
+
+func (s *Server) handleGetEditableFields(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	fields := cluster.GetEditableFields(viper.GetString("cluster.template"))
+
+	slog.Debug("Serving editable cluster fields", "username", user.Username, "field_count", len(fields))
+	c.JSON(http.StatusOK, fields)
+}
+
+func (s *Server) handleGetWorkerFlavors(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	flavors := viper.GetStringSlice("cluster.worker_flavors")
+	slog.Debug("Serving worker flavors", "username", user.Username, "flavor_count", len(flavors))
+	c.JSON(http.StatusOK, gin.H{"flavors": flavors})
+}
+
+func (s *Server) handleGetWorkerClasses(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	classes := viper.GetStringSlice("cluster.worker_classes")
+	slog.Debug("Serving worker classes", "username", user.Username, "class_count", len(classes))
+	c.JSON(http.StatusOK, gin.H{"classes": classes})
+}
+
 func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	user, ok := auth.GetUserFromContext(c.Request.Context())
 	if !ok {
 		slog.Warn("Unauthorized cluster groups edit attempt", "remote_addr", c.ClientIP())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if !s.fieldEditable(c, user, "groups") {
 		return
 	}
 
@@ -796,6 +848,10 @@ func (s *Server) handleEditClusterNodes(c *gin.Context) {
 		return
 	}
 
+	if !s.fieldEditable(c, user, "nodes") {
+		return
+	}
+
 	clusterName := c.Param("name")
 	namespace := c.DefaultQuery("namespace", "capi-system")
 
@@ -856,11 +912,159 @@ func (s *Server) handleEditClusterNodes(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleEditWorkerGroups(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		slog.Warn("Unauthorized worker groups edit attempt", "remote_addr", c.ClientIP())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if !s.fieldEditable(c, user, "workerGroups") {
+		return
+	}
+
+	clusterName := c.Param("name")
+	namespace := c.DefaultQuery("namespace", "capi-system")
+
+	var req struct {
+		Namespace   string                `json:"namespace"`
+		WorkerGroups []cluster.WorkerGroup `json:"workerGroups"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Error("Invalid edit worker groups request body", "username", user.Username, "cluster", clusterName, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if req.Namespace != "" {
+		namespace = req.Namespace
+	}
+
+	// Validate: at least one group required
+	if len(req.WorkerGroups) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one worker group is required"})
+		return
+	}
+
+	// Check if user has permission to modify this cluster
+	clusters := s.watcher.GetClustersForUser(user.Groups)
+	var targetCluster *watcher.ClusterInfo
+	for _, cluster := range clusters {
+		if cluster.Name == clusterName && cluster.Namespace == namespace {
+			targetCluster = cluster
+			break
+		}
+	}
+
+	if targetCluster == nil {
+		slog.Warn("User attempted to modify cluster without access", "username", user.Username, "cluster", clusterName, "namespace", namespace, "user_groups", user.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to modify worker groups without permission", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to modify this cluster"})
+		return
+	}
+
+	if err := s.manager.UpdateClusterWorkerGroups(c.Request.Context(), clusterName, namespace, req.WorkerGroups); err != nil {
+		slog.Error("Failed to update cluster worker groups", "username", user.Username, "cluster", clusterName, "namespace", namespace, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Force immediate refresh and broadcast to all connected clients
+	s.watcher.RefreshAndBroadcast(c.Request.Context())
+
+	slog.Info("Cluster worker groups updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "groups", len(req.WorkerGroups))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "updated",
+		"cluster": clusterName,
+	})
+}
+
+func (s *Server) handleEditClusterControlPlane(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		slog.Warn("Unauthorized cluster control plane edit attempt", "remote_addr", c.ClientIP())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if !s.fieldEditable(c, user, "controlPlaneReplicas") {
+		return
+	}
+
+	clusterName := c.Param("name")
+	namespace := c.DefaultQuery("namespace", "capi-system")
+
+	var req struct {
+		ControlPlaneReplicas int32 `json:"controlPlaneReplicas"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Error("Invalid edit control plane request body", "username", user.Username, "cluster", clusterName, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if req.ControlPlaneReplicas < 1 {
+		slog.Warn("Invalid control plane replica count requested", "username", user.Username, "cluster", clusterName, "replicas", req.ControlPlaneReplicas)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Control plane replicas must be at least 1"})
+		return
+	}
+
+	clusters := s.watcher.GetClustersForUser(user.Groups)
+	var targetCluster *watcher.ClusterInfo
+	for _, cluster := range clusters {
+		if cluster.Name == clusterName && cluster.Namespace == namespace {
+			targetCluster = cluster
+			break
+		}
+	}
+
+	if targetCluster == nil {
+		slog.Warn("User attempted to modify cluster without access", "username", user.Username, "cluster", clusterName, "namespace", namespace, "user_groups", user.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if !s.canUserModifyCluster(user, targetCluster) {
+		slog.Warn("User attempted to modify control plane replicas without permission", "username", user.Username, "cluster", clusterName, "user_groups", user.Groups, "cluster_creator", targetCluster.Creator, "cluster_groups", targetCluster.Groups)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to modify this cluster"})
+		return
+	}
+
+	if err := s.manager.UpdateClusterControlPlaneReplicas(c.Request.Context(), clusterName, namespace, req.ControlPlaneReplicas); err != nil {
+		slog.Error("Failed to update cluster control plane replicas", "username", user.Username, "cluster", clusterName, "namespace", namespace, "replicas", req.ControlPlaneReplicas, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	s.watcher.RefreshAndBroadcast(c.Request.Context())
+
+	slog.Info("Cluster control plane replicas updated successfully", "username", user.Username, "cluster", clusterName, "namespace", namespace, "replicas", req.ControlPlaneReplicas)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":               "updated",
+		"cluster":              clusterName,
+		"controlPlaneReplicas": req.ControlPlaneReplicas,
+	})
+}
+
 func (s *Server) handleEditClusterVersion(c *gin.Context) {
 	user, ok := auth.GetUserFromContext(c.Request.Context())
 	if !ok {
 		slog.Warn("Unauthorized cluster version edit attempt", "remote_addr", c.ClientIP())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if !s.fieldEditable(c, user, "version") {
 		return
 	}
 
@@ -933,6 +1137,19 @@ func getUsernameOrAnon(user *auth.UserInfo) string {
 }
 
 // Helper function to check if user can modify a cluster
+// fieldEditable reports whether the given cluster field is opt-in editable per
+// the editable flag on the matching cluster.parameters entry. When disabled it
+// writes a 403 response and returns false so the caller can return early.
+func (s *Server) fieldEditable(c *gin.Context, user *auth.UserInfo, field string) bool {
+	f, ok := cluster.GetEditableField(viper.GetString("cluster.template"), field)
+	if !ok || !f.Enabled {
+		slog.Warn("Edit blocked: field is not editable in config", "username", user.Username, "field", field)
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("editing %q is disabled", field)})
+		return false
+	}
+	return true
+}
+
 func (s *Server) canUserModifyCluster(user *auth.UserInfo, cluster *watcher.ClusterInfo) bool {
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
 	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)

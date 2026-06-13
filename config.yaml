@@ -2,99 +2,133 @@
 # All values can be overridden with environment variables using the CHIHIRO_ prefix
 # Example: oidc.issuer_url can be set with CHIHIRO_OIDC_ISSUER_URL
 
-# OIDC Authentication Configuration
+docs_url: "https://docs.rpcu.io/" # CHIHIRO_DOCS_URL
+
+host: "0.0.0.0" # CHIHIRO_HOST
+port: 8080 # CHIHIRO_PORT
+
 oidc:
-  issuer_url: 'https://zitadel.bealv.io'  # CHIHIRO_OIDC_ISSUER_URL
-  client_id: '340711715261909669'          # CHIHIRO_OIDC_CLIENT_ID
-  # client_secret: ''                      # CHIHIRO_OIDC_CLIENT_SECRET (required, use env var)
-  # session_key: ''                        # CHIHIRO_SESSION_KEY (required, 32+ bytes, use env var)
-  redirect_url: 'http://localhost:8080/auth/callback'  # CHIHIRO_OIDC_REDIRECT_URL
+  issuer_url: "https://rpcu-gabeck.eu1.zitadel.cloud" # CHIHIRO_OIDC_ISSUER_URL
+  client_id: "377008652088841031" # CHIHIRO_OIDC_CLIENT_ID
+  # client_secret: ''                                  # CHIHIRO_OIDC_CLIENT_SECRET (use env var)
+  # session_key: ''                                    # CHIHIRO_SESSION_KEY (use env var)
+  redirect_url: "http://localhost:8080/auth/callback" # CHIHIRO_OIDC_REDIRECT_URL
 
-# Redis Configuration (for session storage)
 redis:
-  addr: 'localhost:6379'      # CHIHIRO_REDIS_ADDR
-  username: ''                # CHIHIRO_REDIS_USERNAME
-  # password: ''              # CHIHIRO_REDIS_PASSWORD (use env var for security)
-  session_ttl: 5           # CHIHIRO_SESSION_TTL (seconds, default: 3600)
+  addr: "127.0.0.1:6379" # CHIHIRO_REDIS_ADDR
+  username: ""
+  # password: ''                                          # CHIHIRO_REDIS_PASSWORD (use env var)
+  session_ttl: 7200
 
-# Server Configuration
-# host: '0.0.0.0'             # CHIHIRO_HOST (default: 0.0.0.0)
-# port: 8080                  # CHIHIRO_PORT (default: 8080)
-
-# Documentation URL (optional) - CHIHIRO_DOCS_URL
-docs_url: 'https://doc.bealv.io'
-
-# Cluster Management Configuration
 cluster:
-  domain: 'bealv.io'          # CHIHIRO_CLUSTER_DOMAIN
-  port: 443                   # CHIHIRO_CLUSTER_PORT
-
-  # Available Kubernetes versions for new clusters - CHIHIRO_AVAILABLE_VERSIONS (comma-separated)
+  domain: "mgmt.rpcu.lan"
+  port: 443
   available_versions:
-    - 'v1.34.0'
-
-  # Admin groups (full access to all clusters) - CHIHIRO_ADMIN_GROUPS (comma-separated)
+    - "v1.36.1"
   admin_groups:
     - kube-admin
-
-  # Creator groups (can create and manage their own clusters) - CHIHIRO_CREATOR_GROUPS (comma-separated)
   creator_groups:
-    - kube-user
-
-  # Resource limits
+    - kube-admin
   limits:
-    max_clusters: 2           # CHIHIRO_MAX_CLUSTERS - Maximum clusters per tenant
-    max_total_nodes: 2        # CHIHIRO_MAX_TOTAL_NODES - Maximum total worker nodes across all clusters
-    max_total_cp: 9           # CHIHIRO_MAX_TOTAL_CP - Maximum total control plane replicas across all clusters
-
-  # Cluster template as raw YAML string
-  # Placeholders: PLACEHOLDER_NAME, PLACEHOLDER_VERSION, PLACEHOLDER_NODES, PLACEHOLDER_CP_REPLICAS, PLACEHOLDER_SERVICE_DOMAIN
+    max_clusters: 5
+    max_total_nodes: 10
+    max_total_cp: 9
+  # Available OpenStack flavors for worker group node pools.
+  worker_flavors:
+    - small
+    - medium
+    - xmedium
+    - large
+    - xlarge
+  # Available machine deployment classes for worker groups.
+  worker_classes:
+    - default-worker
+  # Built-in cluster fields injected at the given YAML path after the template
+  # is parsed. Set editable: true to expose a post-creation edit button in the
+  # UI and allow the matching API to accept changes; min/max bound numeric
+  # fields. label is shown in the UI.
+  injections:
+    name:
+      path: metadata.name
+    version:
+      path: spec.topology.version
+      label: "Kubernetes Version"
+      editable: true
+    serviceDomain:
+      path: spec.clusterNetwork.serviceDomain
+    # groups has no YAML path (stored as a Chihiro annotation), but can still be
+    # marked editable to expose the access-groups edit button.
+    groups:
+      label: "Access Groups"
+      editable: true
+    workerGroups:
+      path: spec.topology.workers.machineDeployments
+      label: "Worker Groups"
+      editable: true
+    controlPlaneReplicas:
+      path: spec.topology.controlPlane.replicas
+      label: "Control Plane Replicas"
+      editable: true
+      min: 1
+      max: 9
   template: |
-    apiVersion: cluster.x-k8s.io/v1beta1
+    apiVersion: cluster.x-k8s.io/v1beta2
     kind: Cluster
     metadata:
-      name: PLACEHOLDER_NAME
-      namespace: capi-system
+      namespace: mgmt
       labels:
-        capsule: "true"
-        cert-manager: "true"
-        cni: cilium
-        external-dns: "false"
-        external-secret: "false"
-        external-snapshotter: "true"
-        fluxcd: "true"
-        ingress-controller: "false"
-        ingress-replication: "true"
-        monitoring: "false"
-        proxmox-csi: "true"
-        velero: "false"
+        sveltos.argus.rpcu.io/oidc-rbac: enabled
+        sveltos.argus.rpcu.io/cilium: enabled
+        type: workload
     spec:
       clusterNetwork:
         pods:
           cidrBlocks:
-            - 172.16.0.0/16
-        serviceDomain: PLACEHOLDER_SERVICE_DOMAIN
+            - {{ chihiro.podCIDR }}
+        serviceDomain: ignore
         services:
           cidrBlocks:
-            - 172.17.0.0/16
+            - {{ chihiro.serviceCIDR }}
       topology:
-        class: kamaji-proxmox
+        classRef:
+          name: openstack-kamaji
         controlPlane:
-          replicas: PLACEHOLDER_CP_REPLICAS
+          replicas: 0
         variables:
-          - name: dnsServers
+          - name: identityRef
             value:
-              - 10.250.0.1
-          - name: templateID
-            value: 997
-          - name: templateAltID
-            value: 997
-        version: PLACEHOLDER_VERSION
-        workers:
-          machineDeployments:
-            - class: default-worker
-              name: worker
-              replicas: PLACEHOLDER_NODES
-
-  # Field mapping: specify where to inject the node count
-  node_count_path: 'spec.topology.workers.machineDeployments[0].replicas'
+              name: mgmt-cloud-config
+              cloudName: openstack
+          - name: externalNetworkId
+            value: 1cfd69da-057c-4748-a0d4-de5b0ca77db2
+          - name: imageName
+            value: {{ chihiro.imageName }}
+          - name: oidc
+            value:
+              enabled: true
+              issuerURL: https://rpcu-gabeck.eu1.zitadel.cloud
+              clientID: "377050089077613929"
+          - name: managedSubnetCIDR
+            value: {{ chihiro.managedSubnetCIDR }}
+        version: "0.0.0"
+  parameters:
+    podCIDR:
+      label: "Pod CIDR"
+      description: "CIDR block for pod networking"
+      type: string
+      default: "10.207.0.0/16"
+    serviceCIDR:
+      label: "Service CIDR"
+      description: "CIDR block for service networking"
+      type: string
+      default: "10.107.0.0/16"
+    imageName:
+      label: "Node Image"
+      description: "OpenStack image for cluster nodes"
+      type: string
+      default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+    managedSubnetCIDR:
+      label: "Managed Subnet CIDR"
+      description: "CIDR block for the managed subnet"
+      type: string
+      default: "192.168.1.0/24"
