@@ -575,6 +575,15 @@
                 grid-template-columns: 1fr;
             }
         }
+
+        @keyframes chihiro-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .spin {
+            animation: chihiro-spin 1s linear infinite;
+        }
     </style>
 </head>
 <body>
@@ -1183,13 +1192,15 @@
                         </div>
 
                         <div class="cluster-actions">
-                            ${cluster.apiEndpoint ? `
-                            <a href="/api/clusters/${cluster.name}/kubeconfig?namespace=${cluster.namespace}"
-                               class="btn btn-filled btn-small">
+                            ${cluster.apiEndpoint && cluster.kubeconfigReady ? `
+                            <button class="btn btn-filled btn-small"
+                                    id="kubeconfig-btn-${cluster.namespace}-${cluster.name}"
+                                    onclick="downloadKubeconfig('${cluster.name}', '${cluster.namespace}')">
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
-                            </a>` : `
+                            </button>` : `
                             <button class="btn btn-small" disabled
+                                    title="${!cluster.apiEndpoint ? 'Waiting for the control plane endpoint to become available.' : 'Waiting for the control plane OIDC configuration so a kubeconfig can be generated.'}"
                                     style="opacity: 0.5; cursor: not-allowed; background-color: var(--md-sys-color-surface); color: var(--md-sys-color-on-surface-variant); border: 1px solid var(--md-sys-color-outline); border-radius: 24px; padding: 0 16px; height: 36px; font-size: 0.85rem; font-family: 'Inter', sans-serif; font-weight: 500; display: inline-flex; align-items: center;">
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
@@ -1201,9 +1212,109 @@
                                 </button>
                             ` : ''}
                         </div>
+                        <div class="kubeconfig-status" id="kubeconfig-status-${cluster.namespace}-${cluster.name}" style="display: none; margin-top: 8px; font-size: 0.8rem; align-items: center; gap: 6px;"></div>
                     </div>
                 `;
             }).join('');
+
+            // Re-apply any in-progress / error kubeconfig status messages that
+            // were lost when the cluster cards were re-rendered (WebSocket
+            // updates rebuild the whole container's innerHTML).
+            for (const [key, state] of Object.entries(kubeconfigStatus)) {
+                renderKubeconfigStatus(key, state);
+            }
+        }
+
+        // Tracks per-cluster kubeconfig generation status across re-renders.
+        // Keyed by "namespace/name". Each value: { type: 'pending'|'error', message }.
+        const kubeconfigStatus = {};
+
+        function clusterKey(name, namespace) {
+            return `${namespace}/${name}`;
+        }
+
+        // renderKubeconfigStatus paints the inline status line for a cluster card
+        // from the stored state (or clears it when state is null/undefined).
+        function renderKubeconfigStatus(key, state) {
+            const [namespace, name] = key.split('/');
+            const el = document.getElementById(`kubeconfig-status-${namespace}-${name}`);
+            if (!el) return;
+
+            if (!state) {
+                el.style.display = 'none';
+                el.innerHTML = '';
+                return;
+            }
+
+            el.style.display = 'flex';
+            if (state.type === 'pending') {
+                el.style.color = 'var(--md-sys-color-on-surface-variant)';
+                el.innerHTML = `<span class="material-symbols-outlined spin" style="font-size: 1rem;">progress_activity</span><span>${state.message}</span>`;
+            } else if (state.type === 'error') {
+                el.style.color = 'var(--md-sys-color-error)';
+                el.innerHTML = `<span class="material-symbols-outlined" style="font-size: 1rem;">error</span><span>${state.message}</span>`;
+            }
+        }
+
+        function setKubeconfigStatus(name, namespace, state) {
+            const key = clusterKey(name, namespace);
+            if (state) {
+                kubeconfigStatus[key] = state;
+            } else {
+                delete kubeconfigStatus[key];
+            }
+            renderKubeconfigStatus(key, state);
+        }
+
+        // downloadKubeconfig fetches the generated kubeconfig via JS so we can
+        // show progress and surface server errors inline, instead of navigating
+        // the browser to a raw JSON error page. Server-side generation can take
+        // a while because it waits for the control plane endpoint and OIDC data.
+        async function downloadKubeconfig(name, namespace) {
+            const btn = document.getElementById(`kubeconfig-btn-${namespace}-${name}`);
+            if (btn) btn.disabled = true;
+
+            setKubeconfigStatus(name, namespace, {
+                type: 'pending',
+                message: 'Generating kubeconfig… fetching control plane endpoint and OIDC data.'
+            });
+
+            try {
+                const resp = await fetch(`/api/clusters/${encodeURIComponent(name)}/kubeconfig?namespace=${encodeURIComponent(namespace)}`, {
+                    headers: { 'Accept': 'application/octet-stream' }
+                });
+
+                if (!resp.ok) {
+                    let message = `Failed to generate kubeconfig (HTTP ${resp.status}).`;
+                    try {
+                        const data = await resp.json();
+                        if (data && data.error) message = data.error;
+                    } catch (_) { /* non-JSON body, keep generic message */ }
+                    setKubeconfigStatus(name, namespace, { type: 'error', message });
+                    return;
+                }
+
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${name}-kubeconfig.yaml`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                // Briefly confirm success, then clear the status line.
+                setKubeconfigStatus(name, namespace, { type: 'pending', message: 'Kubeconfig downloaded.' });
+                setTimeout(() => setKubeconfigStatus(name, namespace, null), 4000);
+            } catch (error) {
+                setKubeconfigStatus(name, namespace, {
+                    type: 'error',
+                    message: `Failed to generate kubeconfig: ${error.message}`
+                });
+            } finally {
+                if (btn) btn.disabled = false;
+            }
         }
 
         // Update stats
@@ -1753,10 +1864,30 @@
             });
         }
 
+        // Tracks the resolved default last applied to each parameter field, so a
+        // re-render (e.g. after the version changes) can tell whether the field
+        // still holds its default — and may be refreshed — or was edited by the
+        // user — and must be preserved.
+        const paramResolvedDefaults = {};
+
         function renderDynamicParameters() {
             const container = document.getElementById('dynamicParamsContainer');
+            if (!clusterParameters || clusterParameters.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            // Snapshot current field values before rebuilding so user input is
+            // not lost. Re-rendering is needed because version-derived defaults
+            // (e.g. an image name containing a chihiro.version placeholder) must
+            // refresh when the selected version changes.
+            const previousValues = {};
+            clusterParameters.forEach(p => {
+                const el = document.getElementById('param_' + p.key);
+                if (el) previousValues[p.key] = el.value;
+            });
+
             container.innerHTML = '';
-            if (!clusterParameters || clusterParameters.length === 0) return;
 
             const builtins = {
                 version: document.getElementById('clusterVersion').value || '',
@@ -1773,6 +1904,23 @@
 
                 const resolvedDefault = resolveParameterValue(p.default, builtins);
 
+                // Decide the value to show: keep the user's edit, but if the
+                // field still matched its previously-resolved default (i.e. it
+                // was untouched), refresh it to the new resolved default so
+                // version-derived values stay in sync.
+                const hadPrevious = Object.prototype.hasOwnProperty.call(previousValues, p.key);
+                const previousValue = hadPrevious ? previousValues[p.key] : undefined;
+                const previousDefault = paramResolvedDefaults[p.key];
+                let valueToApply;
+                if (!hadPrevious) {
+                    valueToApply = resolvedDefault;
+                } else if (previousValue === '' || previousValue === previousDefault) {
+                    valueToApply = resolvedDefault;
+                } else {
+                    valueToApply = previousValue;
+                }
+                paramResolvedDefaults[p.key] = resolvedDefault;
+
                 let input;
                 if (p.type === 'select' && p.options && p.options.length > 0) {
                     input = document.createElement('select');
@@ -1787,7 +1935,7 @@
                         const option = document.createElement('option');
                         option.value = opt;
                         option.textContent = opt;
-                        if (opt === resolvedDefault) option.selected = true;
+                        if (opt === valueToApply) option.selected = true;
                         input.appendChild(option);
                     });
                 } else {
@@ -1795,7 +1943,7 @@
                     input.type = p.type === 'number' ? 'number' : 'text';
                     input.id = 'param_' + p.key;
                     input.placeholder = resolvedDefault || '';
-                    if (resolvedDefault) input.value = resolvedDefault;
+                    if (valueToApply) input.value = valueToApply;
                     if (p.type === 'number') input.min = '0';
                 }
                 if (p.required) input.required = true;

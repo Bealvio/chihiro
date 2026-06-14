@@ -45,6 +45,11 @@ func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *au
 
 	kubeconfigGen := kubeconfig.NewGenerator(w.GetClient(), w.GetResolver())
 
+	// Let the watcher probe kubeconfig (OIDC) readiness using the generator, so
+	// the UI can grey out the download button until a kubeconfig can actually be
+	// reconstituted from the cluster's control plane CR.
+	w.SetOIDCProber(kubeconfigGen)
+
 	s := &Server{
 		watcher:       w,
 		manager:       m,

@@ -283,10 +283,15 @@ func runServer() {
 
 	authMiddleware := auth.NewMiddleware(oidcProvider)
 
-	clusterWatcher.Start(ctx)
-
+	// Construct the server before starting the watcher so the OIDC kubeconfig
+	// prober is registered on the watcher up front. Otherwise the watcher's
+	// initial load and first readiness tick run with a nil prober, leaving
+	// KubeconfigReady false (and the download button greyed) for up to a full
+	// monitor interval after restart even for long-existing clusters.
 	srv := server.NewServer(clusterWatcher, clusterManager, authMiddleware)
 	defer srv.Close()
+
+	clusterWatcher.Start(ctx)
 
 	address := fmt.Sprintf("%s:%d", host, port)
 

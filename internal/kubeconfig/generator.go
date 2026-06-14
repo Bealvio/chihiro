@@ -126,8 +126,12 @@ func (g *Generator) GenerateKubeconfig(
 		return "", fmt.Errorf("failed to generate kubeconfig")
 	}
 
-	// Skip CA data - using insecure-skip-tls-verify instead
-	caData := ""
+	// Retrieve the cluster CA certificate from the CAPI-managed CA secret so
+	// the kubeconfig can verify the API server's TLS certificate. This is a
+	// public CA certificate, not a secret, so it is safe to embed. If it
+	// cannot be retrieved, fall back to omitting it (the exec plugin/host
+	// trust store handles verification in that case).
+	caData := g.getClusterCAData(ctx, cluster)
 
 	kubeconfigData := &KubeconfigData{
 		ClusterName:     cluster.Name,
@@ -158,6 +162,46 @@ func (g *Generator) GenerateKubeconfig(
 	)
 
 	return kubeconfigContent, nil
+}
+
+// ProbeOIDCReady reports whether a usable kubeconfig can currently be
+// reconstituted for the cluster. It resolves the cluster's control plane CR
+// (provider-agnostic: KamajiControlPlane/"kcp", TenantControlPlane/"tcp",
+// KubeadmControlPlane, etc.) and verifies that the kube-apiserver OIDC flags
+// (oidc-issuer-url + oidc-client-id) are present, either as a direct spec.oidc
+// node or in any apiServer extraArgs set.
+//
+// The control plane CR and its apiserver flags are populated asynchronously by
+// the CAPI controllers after the Cluster is applied, so this returns false
+// until the OIDC configuration is actually observable. It never returns an
+// error: any failure to resolve or fetch the control plane simply means "not
+// ready yet" from the caller's perspective.
+func (g *Generator) ProbeOIDCReady(ctx context.Context, cluster *watcher.ClusterInfo) bool {
+	clusterGVR, err := g.resolver.ClusterGVR()
+	if err != nil {
+		slog.Debug("OIDC probe: failed to resolve Cluster API version", "cluster_name", cluster.Name, "error", err)
+		return false
+	}
+
+	clusterObj, err := g.client.Resource(clusterGVR).Namespace(cluster.Namespace).Get(ctx, cluster.Name, metav1.GetOptions{})
+	if err != nil {
+		slog.Debug("OIDC probe: failed to get cluster object", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "error", err)
+		return false
+	}
+
+	controlPlane, err := g.getControlPlane(ctx, clusterObj)
+	if err != nil {
+		slog.Debug("OIDC probe: control plane not available yet", "cluster_name", cluster.Name, "error", err)
+		return false
+	}
+
+	if _, err := g.extractOIDCConfig(controlPlane); err != nil {
+		slog.Debug("OIDC probe: OIDC config not available on control plane yet", "cluster_name", cluster.Name, "error", err)
+		return false
+	}
+
+	slog.Debug("OIDC probe: kubeconfig reconstitution ready", "cluster_name", cluster.Name)
+	return true
 }
 
 // getControlPlane resolves and fetches the control plane object referenced by
@@ -391,9 +435,61 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 	return "", fmt.Errorf("control plane endpoint not available for cluster %q", cluster.Name)
 }
 
+// getClusterCAData fetches the cluster CA certificate from the CAPI-managed
+// secret. CAPI control plane providers store the cluster CA in a Secret named
+// "<cluster-name>-ca" in the cluster's namespace, with the CA certificate under
+// the "tls.crt" key (base64-encoded by Kubernetes in the Secret's data map).
+//
+// The returned value is the base64-encoded certificate suitable for direct use
+// as certificate-authority-data in a kubeconfig. On any error the empty string
+// is returned and verification is left to the exec plugin / host trust store,
+// so kubeconfig generation never fails solely because the CA could not be read.
+func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.ClusterInfo) string {
+	secretGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	secretName := fmt.Sprintf("%s-ca", cluster.Name)
+
+	secret, err := g.client.Resource(secretGVR).Namespace(cluster.Namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		slog.Warn(
+			"Could not retrieve cluster CA secret; kubeconfig will omit certificate-authority-data",
+			"cluster_name", cluster.Name,
+			"namespace", cluster.Namespace,
+			"secret_name", secretName,
+			"error", err,
+		)
+		return ""
+	}
+
+	data, ok := secret.Object["data"].(map[string]interface{})
+	if !ok {
+		slog.Warn("Cluster CA secret has no data field", "cluster_name", cluster.Name, "secret_name", secretName)
+		return ""
+	}
+
+	// Values in a Secret's data map are already base64-encoded strings, which
+	// is exactly the encoding certificate-authority-data expects.
+	caData, ok := data["tls.crt"].(string)
+	if !ok || caData == "" {
+		slog.Warn("Cluster CA secret missing tls.crt key", "cluster_name", cluster.Name, "secret_name", secretName)
+		return ""
+	}
+
+	slog.Info("Retrieved cluster CA certificate", "cluster_name", cluster.Name, "secret_name", secretName)
+	return caData
+}
+
 func (g *Generator) renderKubeconfig(data *KubeconfigData) string {
-	// Build cluster configuration - using public CA, no need for custom certificate-authority-data
-	clusterConfig := fmt.Sprintf("    server: %s", data.ServerURL)
+	// Build cluster configuration. Embed the cluster CA certificate when it was
+	// retrieved so clients can verify the API server's TLS certificate; if it
+	// is unavailable, fall back to the server entry alone and let the exec
+	// plugin / host trust store handle verification.
+	// The template indents the first line of this block with 4 spaces, so the
+	// "server" line must NOT carry its own leading spaces; continuation lines
+	// supply their own 4-space indent to align under "- cluster:".
+	clusterConfig := fmt.Sprintf("server: %s", data.ServerURL)
+	if data.CertificateData != "" {
+		clusterConfig = fmt.Sprintf("server: %s\n    certificate-authority-data: %s", data.ServerURL, data.CertificateData)
+	}
 
 	// SECURITY: Do NOT expose the client secret in generated kubeconfig files
 	// Users should configure their client secret locally or use PKCE flow

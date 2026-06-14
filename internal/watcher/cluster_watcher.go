@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,21 @@ type ClusterInfo struct {
 	Domain               string                 `json:"domain"`
 	Parameters           map[string]string      `json:"parameters"`
 	WorkerGroups         []cluster.WorkerGroup  `json:"workerGroups"`
+	// KubeconfigReady reports whether a kubeconfig can currently be
+	// reconstituted for the cluster, i.e. the control plane CR (kcp/tcp) is
+	// present and exposes the kube-apiserver OIDC flags. The CAPI controllers
+	// populate these asynchronously after creation, so this stays false until
+	// the OIDC configuration is observable. The UI greys out the kubeconfig
+	// download until both APIEndpoint and KubeconfigReady are set.
+	KubeconfigReady bool `json:"kubeconfigReady"`
+}
+
+// OIDCProber reports whether a kubeconfig (with its OIDC apiserver flags) can
+// currently be reconstituted for a cluster. It is satisfied by
+// *kubeconfig.Generator. The watcher takes it as an interface to avoid an
+// import cycle (the kubeconfig package imports this package).
+type OIDCProber interface {
+	ProbeOIDCReady(ctx context.Context, cluster *ClusterInfo) bool
 }
 
 type ClusterWatcher struct {
@@ -111,6 +127,20 @@ type ClusterWatcher struct {
 	clients     map[*websocket.Conn]*UserWebSocketClient
 	upgrader    websocket.Upgrader
 	adminGroups []string
+	// oidcProber probes whether a kubeconfig can be reconstituted (control
+	// plane OIDC flags present). Set after construction via SetOIDCProber to
+	// avoid an import cycle with the kubeconfig package. May be nil, in which
+	// case readiness probing is skipped and KubeconfigReady stays false.
+	oidcProber OIDCProber
+}
+
+// SetOIDCProber registers the prober used to determine whether each cluster's
+// kubeconfig can be reconstituted yet. Safe to call once during setup, before
+// Start.
+func (cw *ClusterWatcher) SetOIDCProber(p OIDCProber) {
+	cw.mutex.Lock()
+	cw.oidcProber = p
+	cw.mutex.Unlock()
 }
 
 type UserWebSocketClient struct {
@@ -211,6 +241,11 @@ func (cw *ClusterWatcher) loadInitialClusters(ctx context.Context) {
 	cw.mutex.Unlock()
 
 	cw.broadcastUpdate()
+
+	// Probe kubeconfig/endpoint readiness immediately so clusters that already
+	// existed before this restart reflect their true state right away, rather
+	// than waiting for the first periodic monitor tick.
+	cw.checkAllClustersReadiness()
 }
 
 func (cw *ClusterWatcher) watchClusters(ctx context.Context) {
@@ -248,6 +283,12 @@ func (cw *ClusterWatcher) watchClusters(ctx context.Context) {
 				cw.mutex.Lock()
 				switch event.Type {
 				case watch.Added, watch.Modified:
+					// Preserve the last-probed kubeconfig readiness so a re-parse
+					// from a watch event doesn't flip the UI button off until the
+					// next periodic probe re-confirms it.
+					if prev, ok := cw.clusters[clusterInfo.Name]; ok {
+						clusterInfo.KubeconfigReady = prev.KubeconfigReady
+					}
 					cw.clusters[clusterInfo.Name] = clusterInfo
 				case watch.Deleted:
 					delete(cw.clusters, clusterInfo.Name)
@@ -560,6 +601,20 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	return clusterInfo
 }
 
+// sortClusters orders clusters by age, newest first (CreatedAt descending),
+// with the cluster name as a stable tie-breaker. The watcher stores clusters in
+// a map, whose iteration order is nondeterministic, so every consumer-facing
+// slice is sorted here to keep the displayed ordering consistent across
+// rebuilds and WebSocket updates.
+func sortClusters(clusters []*ClusterInfo) {
+	sort.SliceStable(clusters, func(i, j int) bool {
+		if !clusters[i].CreatedAt.Equal(clusters[j].CreatedAt) {
+			return clusters[i].CreatedAt.After(clusters[j].CreatedAt)
+		}
+		return clusters[i].Name < clusters[j].Name
+	})
+}
+
 func (cw *ClusterWatcher) GetClusters() []*ClusterInfo {
 	cw.mutex.RLock()
 	defer cw.mutex.RUnlock()
@@ -568,6 +623,7 @@ func (cw *ClusterWatcher) GetClusters() []*ClusterInfo {
 	for _, cluster := range cw.clusters {
 		clusters = append(clusters, cluster)
 	}
+	sortClusters(clusters)
 	return clusters
 }
 
@@ -581,6 +637,7 @@ func (cw *ClusterWatcher) GetClustersForUser(userGroups []string) []*ClusterInfo
 			clusters = append(clusters, cluster)
 		}
 	}
+	sortClusters(clusters)
 	return clusters
 }
 
@@ -699,23 +756,50 @@ func (cw *ClusterWatcher) checkAllClustersReadiness() {
 	}
 	cw.mutex.RUnlock()
 
-	// Test reachability without holding lock (network calls can be slow)
+	cw.mutex.RLock()
+	prober := cw.oidcProber
+	cw.mutex.RUnlock()
+
+	// Test reachability and OIDC kubeconfig readiness without holding the lock
+	// (both involve API/network calls that can be slow).
 	type readinessResult struct {
-		cluster  *ClusterInfo
-		oldReady bool
-		newReady bool
+		cluster     *ClusterInfo
+		newReady    bool
+		readyChange bool
+		newKubecfg  bool
+		kubeChange  bool
 	}
 	results := make([]readinessResult, 0)
 
 	for _, cluster := range clustersCopy {
-		if cluster.APIEndpoint != "" {
-			oldReady := cluster.Ready
-			newReady := cw.testAPIEndpointReachability(cluster.APIEndpoint)
+		res := readinessResult{cluster: cluster}
 
-			if oldReady != newReady {
-				slog.Info("Cluster readiness changed", "cluster", cluster.Name, "endpoint", cluster.APIEndpoint, "old_ready", oldReady, "new_ready", newReady)
-				results = append(results, readinessResult{cluster, oldReady, newReady})
+		if cluster.APIEndpoint != "" {
+			newReady := cw.testAPIEndpointReachability(cluster.APIEndpoint)
+			if cluster.Ready != newReady {
+				slog.Info("Cluster readiness changed", "cluster", cluster.Name, "endpoint", cluster.APIEndpoint, "old_ready", cluster.Ready, "new_ready", newReady)
+				res.newReady = newReady
+				res.readyChange = true
 			}
+		}
+
+		// Probe whether the kubeconfig can be reconstituted yet (control plane
+		// OIDC flags observable). The CAPI controllers populate the control
+		// plane CR (kcp/tcp) and its apiserver flags asynchronously, so this
+		// flips to true some time after creation.
+		if prober != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			newKubecfg := prober.ProbeOIDCReady(ctx, cluster)
+			cancel()
+			if cluster.KubeconfigReady != newKubecfg {
+				slog.Info("Cluster kubeconfig readiness changed", "cluster", cluster.Name, "old_ready", cluster.KubeconfigReady, "new_ready", newKubecfg)
+				res.newKubecfg = newKubecfg
+				res.kubeChange = true
+			}
+		}
+
+		if res.readyChange || res.kubeChange {
+			results = append(results, res)
 		}
 	}
 
@@ -724,7 +808,12 @@ func (cw *ClusterWatcher) checkAllClustersReadiness() {
 		cw.mutex.Lock()
 		for _, result := range results {
 			if c, exists := cw.clusters[result.cluster.Name]; exists {
-				c.Ready = result.newReady
+				if result.readyChange {
+					c.Ready = result.newReady
+				}
+				if result.kubeChange {
+					c.KubeconfigReady = result.newKubecfg
+				}
 			}
 		}
 		cw.mutex.Unlock()
@@ -837,17 +926,30 @@ func (cw *ClusterWatcher) RefreshAndBroadcast(ctx context.Context) {
 
 	slog.Debug("Refreshed cluster list", "count", len(list.Items))
 
-	// Update internal cache
+	// Update internal cache, preserving last-probed kubeconfig readiness so a
+	// refresh doesn't flip the UI button off until the next periodic probe.
 	cw.mutex.Lock()
+	prevReady := make(map[string]bool, len(cw.clusters))
+	for name, c := range cw.clusters {
+		prevReady[name] = c.KubeconfigReady
+	}
 	cw.clusters = make(map[string]*ClusterInfo)
 	for _, item := range list.Items {
 		clusterInfo := cw.parseCluster(&item)
+		if r, ok := prevReady[clusterInfo.Name]; ok {
+			clusterInfo.KubeconfigReady = r
+		}
 		cw.clusters[clusterInfo.Name] = clusterInfo
 	}
 	cw.mutex.Unlock()
 
 	// Broadcast to all connected clients
 	cw.broadcastUpdate()
+
+	// Probe kubeconfig/endpoint readiness immediately so newly listed clusters
+	// reflect their true state without waiting for the next periodic tick.
+	go cw.checkAllClustersReadiness()
+
 	slog.Debug("Cluster list refreshed and broadcast complete")
 }
 
