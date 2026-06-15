@@ -31,6 +31,24 @@ type Server struct {
 
 var clusterNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
+// groupNameRegex restricts access-group names to a conservative charset. Groups
+// are persisted into a cluster annotation and rendered in the dashboard, so
+// disallowing HTML/JS metacharacters here is defense-in-depth against stored
+// XSS in addition to the client-side escaping. Allows letters, digits, and the
+// common identifier separators used by IdPs (OIDC group claims).
+var groupNameRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,253}$`)
+
+// validateGroupNames returns the first group that fails groupNameRegex, or empty
+// string if all are valid.
+func validateGroupNames(groups []string) string {
+	for _, g := range groups {
+		if !groupNameRegex.MatchString(g) {
+			return g
+		}
+	}
+	return ""
+}
+
 func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *auth.Middleware) *Server {
 	slog.Info("Initializing server with routes and middleware")
 
@@ -257,6 +275,36 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 		slog.Info("WebSocket connection closed", "username", user.Username)
 	}()
 
+	// Reap dead connections: require a pong within wsPongWait, refreshing the
+	// read deadline on each pong. Without this a half-open connection would
+	// block ReadMessage forever, leaking a goroutine and a client map entry.
+	_ = conn.SetReadDeadline(time.Now().Add(watcher.WSPongWait()))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(watcher.WSPongWait()))
+	})
+
+	// Send periodic pings so idle but healthy connections stay alive and the
+	// read deadline keeps getting refreshed via the pong handler. The ping
+	// goroutine stops when the reader loop below exits and closes stopPing.
+	pingTicker := time.NewTicker(watcher.WSPingPeriod())
+	defer pingTicker.Stop()
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go func() {
+		for {
+			select {
+			case <-pingTicker.C:
+				if err := s.watcher.PingClient(conn); err != nil {
+					slog.Debug("WebSocket ping failed, closing connection", "username", user.Username, "error", err)
+					conn.Close()
+					return
+				}
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+
 	for {
 		_, _, err := conn.ReadMessage()
 		if err != nil {
@@ -285,6 +333,14 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 	if !clusterNameRegex.MatchString(req.Name) {
 		slog.Warn("Invalid cluster name format", "username", user.Username, "cluster_name", req.Name)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cluster name format. Must be lowercase alphanumeric with hyphens"})
+		return
+	}
+
+	// Validate group name format (applies to admins and non-admins alike) so no
+	// HTML/JS metacharacters are persisted into the cluster annotation.
+	if bad := validateGroupNames(parseGroupsString(req.Groups)); bad != "" {
+		slog.Warn("Invalid group name in cluster creation", "username", user.Username, "cluster_name", req.Name, "group", bad)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group name: only letters, digits and _.:/@- are allowed"})
 		return
 	}
 
@@ -716,6 +772,14 @@ func (s *Server) handleEditClusterGroups(c *gin.Context) {
 	// Use namespace from request body if provided
 	if req.Namespace != "" {
 		namespace = req.Namespace
+	}
+
+	// Validate group name format before any persistence (defense-in-depth
+	// against stored XSS via the groups annotation).
+	if bad := validateGroupNames(parseGroupsString(req.Groups)); bad != "" {
+		slog.Warn("Invalid group name in groups edit", "username", user.Username, "cluster", clusterName, "group", bad)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group name: only letters, digits and _.:/@- are allowed"})
+		return
 	}
 
 	// Check if user has permission to modify this cluster

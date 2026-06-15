@@ -1092,6 +1092,22 @@
                 .replace(/'/g, '&#39;');
         }
 
+        // escapeJs escapes a value for safe interpolation inside a single-quoted
+        // JavaScript string literal embedded in an inline HTML attribute (e.g.
+        // onclick="fn('...')"). It neutralizes quote breakouts, backslashes, and
+        // angle brackets so attacker-controlled data (group names, etc.) cannot
+        // break out of the handler or the attribute.
+        function escapeJs(value) {
+            return String(value)
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, '\\x27')
+                .replace(/"/g, '\\x22')
+                .replace(/</g, '\\x3C')
+                .replace(/>/g, '\\x3E')
+                .replace(/\r/g, '\\r')
+                .replace(/\n/g, '\\n');
+        }
+
         // Map a CAPI cluster phase to a status badge style.
         function phaseStatusClass(phase) {
             switch ((phase || '').toLowerCase()) {
@@ -1125,54 +1141,77 @@
                 const statusText = cluster.available ? 'Available' : (cluster.phase || 'Unknown');
                 const statusClass = cluster.available ? 'ready' : phaseStatusClass(cluster.phase);
 
+                // All cluster fields below originate from Kubernetes resources
+                // (names, groups, creator, parameters) and must be treated as
+                // untrusted. Escape for HTML text context and, separately, for
+                // the single-quoted JS string literals used inside inline
+                // onclick handlers to prevent stored XSS.
+                const nameHtml = escapeHtml(cluster.name);
+                const nsHtml = escapeHtml(cluster.namespace);
+                const nameJs = escapeJs(cluster.name);
+                const nsJs = escapeJs(cluster.namespace);
+                const versionHtml = cluster.version ? escapeHtml(cluster.version) : 'N/A';
+                const versionJs = escapeJs(cluster.version || '');
+                const apiEndpointHtml = cluster.apiEndpoint ? escapeHtml(cluster.apiEndpoint) : 'N/A';
+                const groupsJoined = cluster.groups ? cluster.groups.join(',') : '';
+                const podCidrHtml = cluster.network && cluster.network.podCIDRs && cluster.network.podCIDRs.length > 0
+                    ? escapeHtml(cluster.network.podCIDRs.join(', ')) : 'N/A';
+                const serviceCidrHtml = cluster.network && cluster.network.serviceCIDRs && cluster.network.serviceCIDRs.length > 0
+                    ? escapeHtml(cluster.network.serviceCIDRs.join(', ')) : 'N/A';
+                const serviceDomainHtml = cluster.network && cluster.network.serviceDomain
+                    ? escapeHtml(cluster.network.serviceDomain) : 'N/A';
+                // Element IDs embed namespace/name; sanitize to a safe charset so
+                // they can't break out of the attribute or collide with markup.
+                const idKey = `${cluster.namespace}-${cluster.name}`.replace(/[^A-Za-z0-9_.-]/g, '_');
+
                 return `
                     <div class="cluster-card">
                         <div class="cluster-header">
-                            <h3 class="cluster-name">${cluster.name}</h3>
-                            <div class="cluster-status ${statusClass}">${statusText}</div>
+                            <h3 class="cluster-name">${nameHtml}</h3>
+                            <div class="cluster-status ${statusClass}">${escapeHtml(statusText)}</div>
                         </div>
 
                         <div class="cluster-details">
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Version
-                                    ${canEditField(cluster, 'version') ? `<button class="edit-btn" onclick="openEditVersionModal('${cluster.name}', '${cluster.namespace}', '${cluster.version || ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                    ${canEditField(cluster, 'version') ? `<button class="edit-btn" onclick="openEditVersionModal('${nameJs}', '${nsJs}', '${versionJs}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
-                                <div class="detail-value">${cluster.version || 'N/A'}</div>
+                                <div class="detail-value">${versionHtml}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Worker Groups
-                                    ${canEditField(cluster, 'workerGroups') ? `<button class="edit-btn" onclick="openEditWorkerGroupsModal('${cluster.name}', '${cluster.namespace}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                    ${canEditField(cluster, 'workerGroups') ? `<button class="edit-btn" onclick="openEditWorkerGroupsModal('${nameJs}', '${nsJs}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
                                 <div class="detail-value">${formatWorkerGroups(cluster.workerGroups, cluster.nodes)}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">
                                     Control Plane
-                                    ${canEditField(cluster, 'controlPlaneReplicas') ? `<button class="edit-btn" onclick="openEditControlPlaneModal('${cluster.name}', '${cluster.namespace}', ${cluster.controlPlaneReplicas || 0})"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                    ${canEditField(cluster, 'controlPlaneReplicas') ? `<button class="edit-btn" onclick="openEditControlPlaneModal('${nameJs}', '${nsJs}', ${Number(cluster.controlPlaneReplicas) || 0})"><span class="material-symbols-outlined">edit</span></button>` : ''}
                                 </div>
-                                <div class="detail-value">${cluster.controlPlaneReplicas || 0}</div>
+                                <div class="detail-value">${Number(cluster.controlPlaneReplicas) || 0}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Age</div>
-                                <div class="detail-value">${age}</div>
+                                <div class="detail-value">${escapeHtml(age)}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Pod CIDR</div>
-                                <div class="detail-value">${cluster.network && cluster.network.podCIDRs && cluster.network.podCIDRs.length > 0 ? cluster.network.podCIDRs.join(', ') : 'N/A'}</div>
+                                <div class="detail-value">${podCidrHtml}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Service CIDR</div>
-                                <div class="detail-value">${cluster.network && cluster.network.serviceCIDRs && cluster.network.serviceCIDRs.length > 0 ? cluster.network.serviceCIDRs.join(', ') : 'N/A'}</div>
+                                <div class="detail-value">${serviceCidrHtml}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Service Domain</div>
-                                <div class="detail-value">${cluster.network && cluster.network.serviceDomain ? cluster.network.serviceDomain : 'N/A'}</div>
+                                <div class="detail-value">${serviceDomainHtml}</div>
                             </div>
                             <div class="detail-item full-width">
                                 <div class="detail-label">API Endpoint</div>
-                                <div class="detail-value" style="font-size: 0.75rem; word-break: break-all;">${cluster.apiEndpoint || 'N/A'}</div>
+                                <div class="detail-value" style="font-size: 0.75rem; word-break: break-all;">${apiEndpointHtml}</div>
                             </div>
                         </div>
 
@@ -1181,11 +1220,11 @@
                         <div class="cluster-groups">
                             <div class="groups-label">
                                 Access Groups
-                                ${canEditField(cluster, 'groups') ? `<button class="edit-btn" onclick="openEditGroupsModal('${cluster.name}', '${cluster.namespace}', '${cluster.groups ? cluster.groups.join(',') : ''}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
+                                ${canEditField(cluster, 'groups') ? `<button class="edit-btn" onclick="openEditGroupsModal('${nameJs}', '${nsJs}', '${escapeJs(groupsJoined)}')"><span class="material-symbols-outlined">edit</span></button>` : ''}
                             </div>
                             <div class="group-chips">
                                 ${cluster.groups && cluster.groups.length > 0 ?
-                                    cluster.groups.map(group => `<span class="group-chip">${group}</span>`).join('') :
+                                    cluster.groups.map(group => `<span class="group-chip">${escapeHtml(group)}</span>`).join('') :
                                     '<span style="color: var(--md-sys-color-on-surface-variant); font-size: 0.85rem;">No groups assigned</span>'
                                 }
                             </div>
@@ -1194,8 +1233,8 @@
                         <div class="cluster-actions">
                             ${cluster.apiEndpoint && cluster.kubeconfigReady ? `
                             <button class="btn btn-filled btn-small"
-                                    id="kubeconfig-btn-${cluster.namespace}-${cluster.name}"
-                                    onclick="downloadKubeconfig('${cluster.name}', '${cluster.namespace}')">
+                                    id="kubeconfig-btn-${idKey}"
+                                    onclick="downloadKubeconfig('${nameJs}', '${nsJs}')">
                                 <span class="material-symbols-outlined" style="margin-right: 4px;">download</span>
                                 Kubeconfig
                             </button>` : `
@@ -1206,13 +1245,13 @@
                                 Kubeconfig
                             </button>`}
                             ${canDeleteCluster(cluster) ? `
-                                <button class="btn danger btn-small" onclick="openDeleteModal('${cluster.name}', '${cluster.namespace}')">
+                                <button class="btn danger btn-small" onclick="openDeleteModal('${nameJs}', '${nsJs}')">
                                     <span class="material-symbols-outlined" style="margin-right: 4px;">delete</span>
                                     Delete
                                 </button>
                             ` : ''}
                         </div>
-                        <div class="kubeconfig-status" id="kubeconfig-status-${cluster.namespace}-${cluster.name}" style="display: none; margin-top: 8px; font-size: 0.8rem; align-items: center; gap: 6px;"></div>
+                        <div class="kubeconfig-status" id="kubeconfig-status-${idKey}" style="display: none; margin-top: 8px; font-size: 0.8rem; align-items: center; gap: 6px;"></div>
                     </div>
                 `;
             }).join('');
@@ -1233,11 +1272,21 @@
             return `${namespace}/${name}`;
         }
 
+        // clusterDomId builds the sanitized suffix used in per-cluster element
+        // IDs. It must match the idKey computed during card rendering so lookups
+        // resolve to the right element regardless of characters in the
+        // namespace/name.
+        function clusterDomId(namespace, name) {
+            return `${namespace}-${name}`.replace(/[^A-Za-z0-9_.-]/g, '_');
+        }
+
         // renderKubeconfigStatus paints the inline status line for a cluster card
         // from the stored state (or clears it when state is null/undefined).
         function renderKubeconfigStatus(key, state) {
-            const [namespace, name] = key.split('/');
-            const el = document.getElementById(`kubeconfig-status-${namespace}-${name}`);
+            const slash = key.indexOf('/');
+            const namespace = key.slice(0, slash);
+            const name = key.slice(slash + 1);
+            const el = document.getElementById(`kubeconfig-status-${clusterDomId(namespace, name)}`);
             if (!el) return;
 
             if (!state) {
@@ -1249,10 +1298,10 @@
             el.style.display = 'flex';
             if (state.type === 'pending') {
                 el.style.color = 'var(--md-sys-color-on-surface-variant)';
-                el.innerHTML = `<span class="material-symbols-outlined spin" style="font-size: 1rem;">progress_activity</span><span>${state.message}</span>`;
+                el.innerHTML = `<span class="material-symbols-outlined spin" style="font-size: 1rem;">progress_activity</span><span>${escapeHtml(state.message)}</span>`;
             } else if (state.type === 'error') {
                 el.style.color = 'var(--md-sys-color-error)';
-                el.innerHTML = `<span class="material-symbols-outlined" style="font-size: 1rem;">error</span><span>${state.message}</span>`;
+                el.innerHTML = `<span class="material-symbols-outlined" style="font-size: 1rem;">error</span><span>${escapeHtml(state.message)}</span>`;
             }
         }
 
@@ -1271,7 +1320,7 @@
         // the browser to a raw JSON error page. Server-side generation can take
         // a while because it waits for the control plane endpoint and OIDC data.
         async function downloadKubeconfig(name, namespace) {
-            const btn = document.getElementById(`kubeconfig-btn-${namespace}-${name}`);
+            const btn = document.getElementById(`kubeconfig-btn-${clusterDomId(namespace, name)}`);
             if (btn) btn.disabled = true;
 
             setKubeconfigStatus(name, namespace, {
@@ -1445,7 +1494,7 @@
             if (!groups || groups.length === 0) {
                 return totalNodes || 0;
             }
-            return groups.map(g => `${g.replicas}x ${g.flavor} (${g.class || 'default-worker'})`).join(', ');
+            return groups.map(g => `${Number(g.replicas) || 0}x ${escapeHtml(g.flavor)} (${escapeHtml(g.class || 'default-worker')})`).join(', ');
         }
 
         function openEditWorkerGroupsModal(name, namespace) {

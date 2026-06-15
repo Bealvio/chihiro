@@ -2,7 +2,6 @@ package kubeconfig
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -286,18 +285,18 @@ func (g *Generator) getControlPlane(ctx context.Context, clusterObj *unstructure
 }
 
 func (g *Generator) extractOIDCConfig(controlPlane *unstructured.Unstructured) (*OIDCConfig, error) {
-	// Debug: log the entire control plane structure
-	cpBytes, _ := json.MarshalIndent(controlPlane.Object, "", "  ")
+	// NOTE: Do NOT dump the full control plane object here. Control plane specs
+	// can carry sensitive material (e.g. oidc-client-secret in apiServer
+	// extraArgs), and this runs at debug level which would leak secrets into
+	// logs. Log only non-sensitive identifying metadata.
 	slog.Debug(
-		"Control plane structure",
+		"Extracting OIDC config from control plane",
 		"cluster",
 		controlPlane.GetName(),
 		"namespace",
 		controlPlane.GetNamespace(),
 		"kind",
 		controlPlane.GetKind(),
-		"structure",
-		string(cpBytes),
 	)
 
 	spec, ok := controlPlane.Object["spec"].(map[string]interface{})

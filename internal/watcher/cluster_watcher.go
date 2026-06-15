@@ -143,6 +143,24 @@ func (cw *ClusterWatcher) SetOIDCProber(p OIDCProber) {
 	cw.mutex.Unlock()
 }
 
+// WebSocket keepalive/timeout tuning. Writes are bounded so a stuck client
+// cannot block a broadcast goroutine indefinitely; the read deadline (refreshed
+// on every pong) reaps dead connections that would otherwise leak a goroutine
+// and a map entry.
+const (
+	wsWriteWait  = 10 * time.Second
+	wsPongWait   = 60 * time.Second
+	wsPingPeriod = (wsPongWait * 9) / 10
+)
+
+// WSPongWait is the maximum time to wait for a pong before a connection is
+// considered dead. Exposed for the HTTP handler that owns the read loop.
+func WSPongWait() time.Duration { return wsPongWait }
+
+// WSPingPeriod is the interval at which the server pings each client. It is
+// shorter than WSPongWait so a pong is expected before the read deadline lapses.
+func WSPingPeriod() time.Duration { return wsPingPeriod }
+
 type UserWebSocketClient struct {
 	Conn   *websocket.Conn
 	Groups []string
@@ -153,11 +171,29 @@ type UserWebSocketClient struct {
 }
 
 // writeMessage serializes writes to the underlying connection so concurrent
-// broadcasts never write to the same socket at the same time.
+// broadcasts never write to the same socket at the same time. A bounded write
+// deadline prevents a slow/dead client from stalling the broadcaster.
 func (c *UserWebSocketClient) writeMessage(messageType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 	return c.Conn.WriteMessage(messageType, data)
+}
+
+// PingClient sends a WebSocket ping through the serialized writer. It returns an
+// error if the connection is unknown or the write fails, so the caller can tear
+// the connection down.
+func (cw *ClusterWatcher) PingClient(conn *websocket.Conn) error {
+	cw.mutex.RLock()
+	client := cw.clients[conn]
+	cw.mutex.RUnlock()
+	if client == nil {
+		return fmt.Errorf("websocket client not registered")
+	}
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+	return conn.WriteMessage(websocket.PingMessage, nil)
 }
 
 func NewClusterWatcher(kubeconfig string) (*ClusterWatcher, error) {
@@ -379,12 +415,9 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Get domain for cluster
-	domain := viper.GetString("cluster.domain")
-	if domain == "" {
-		domain = "bealv.io" // Default domain
-	}
-	clusterInfo.Domain = domain
+	// Get domain for cluster from config. No hardcoded fallback: the domain is
+	// deployment-specific and a stale default would be misleading.
+	clusterInfo.Domain = viper.GetString("cluster.domain")
 
 	if conditions, ok := status["conditions"].([]interface{}); ok {
 		for _, condition := range conditions {

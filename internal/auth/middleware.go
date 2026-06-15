@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 )
 
 type contextKey string
@@ -126,13 +128,53 @@ func ParseClusterGroups(annotations map[string]interface{}) []string {
 	return result
 }
 
+// trustedRedirectHost reports whether host (host[:port]) is allowed to be used
+// when constructing the OAuth redirect URL. X-Forwarded-* headers are
+// attacker-controllable unless a trusted proxy overwrites them, so a forwarded
+// host is only honored when it appears in an explicit allow-list. The allow-list
+// is built from the configured OIDC redirect URL host and any entries in
+// allowed_origins. An empty allow-list means "not configured" and the caller
+// falls back to the request Host.
+func trustedRedirectHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	allowed := make(map[string]bool)
+	if ru := viper.GetString("oidc.redirect_url"); ru != "" {
+		if u, err := url.Parse(ru); err == nil && u.Host != "" {
+			allowed[u.Host] = true
+		}
+	}
+	if origins := viper.GetString("allowed_origins"); origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			o = strings.TrimSpace(o)
+			if o == "" {
+				continue
+			}
+			if u, err := url.Parse(o); err == nil && u.Host != "" {
+				allowed[u.Host] = true
+			} else {
+				allowed[o] = true // bare host[:port] form
+			}
+		}
+	}
+	return allowed[host]
+}
+
 // getRedirectURLFromRequest constructs the redirect URL based on the incoming request
 func getRedirectURLFromRequest(r *http.Request) string {
-	// Get the host from the request
-	// Try X-Forwarded-Host first (for proxied requests), then Host header
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
+	// Default to the request's own Host (set by the server, not the client).
+	host := r.Host
+
+	// Only trust X-Forwarded-Host when it matches a configured allow-list,
+	// otherwise an attacker could poison the OAuth redirect_uri by spoofing the
+	// header on a deployment that isn't fronted by a header-stripping proxy.
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		if trustedRedirectHost(fwd) {
+			host = fwd
+		} else {
+			slog.Warn("Ignoring untrusted X-Forwarded-Host header", "forwarded_host", fwd, "request_host", r.Host)
+		}
 	}
 
 	// Determine the scheme
@@ -140,9 +182,11 @@ func getRedirectURLFromRequest(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	// Check X-Forwarded-Proto header for proxied requests
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
+	// Honor X-Forwarded-Proto only for the trusted host; restrict to http/https.
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" && trustedRedirectHost(host) {
+		if proto == "http" || proto == "https" {
+			scheme = proto
+		}
 	}
 
 	redirectURL := fmt.Sprintf("%s://%s/auth/callback", scheme, host)
@@ -314,10 +358,12 @@ func (m *Middleware) HandleUserInfo(c *gin.Context) {
 // isPublicEndpoint checks if the endpoint should be accessible without authentication
 func isPublicEndpoint(path string) bool {
 	publicPaths := []string{
+		"/login",
 		"/auth/login",
 		"/auth/callback",
 		"/auth/logout",
 		"/health",
+		"/favicon.ico",
 	}
 
 	for _, publicPath := range publicPaths {
