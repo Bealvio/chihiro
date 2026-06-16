@@ -16,14 +16,116 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// WorkerGroup describes a group of worker nodes with a shared flavor and
-// replica count.  Multiple groups allow heterogeneous node pools within a
-// single cluster.
+// WorkerGroup describes a group of worker nodes. The named fields below are
+// retained for backward compatibility with previously stored annotations and
+// the watcher/limit code, but worker groups are otherwise generic: every value
+// from the config-driven worker_group_fields schema is captured in Values
+// (keyed by field key), so arbitrary fields round-trip through the API and the
+// stored annotation.
 type WorkerGroup struct {
 	Name     string `json:"name"`
-	Class    string `json:"class"`
-	Flavor   string `json:"flavor"`
+	Class    string `json:"class,omitempty"`
+	Flavor   string `json:"flavor,omitempty"`
 	Replicas int32  `json:"replicas"`
+
+	// Values holds every worker_group_fields value keyed by field key. It is
+	// populated from the named fields above and from any extra JSON keys.
+	Values map[string]string `json:"-"`
+}
+
+// workerGroupAlias avoids infinite recursion in the custom (Un)MarshalJSON.
+type workerGroupAlias WorkerGroup
+
+// UnmarshalJSON captures the known fields plus every extra key into Values so
+// generic worker_group_fields survive the round-trip from the frontend.
+func (w *WorkerGroup) UnmarshalJSON(data []byte) error {
+	var alias workerGroupAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*w = WorkerGroup(alias)
+
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	if w.Values == nil {
+		w.Values = make(map[string]string, len(all))
+	}
+	for key, rawVal := range all {
+		// Decode each value as a string, tolerating numbers/bools.
+		var s string
+		if err := json.Unmarshal(rawVal, &s); err != nil {
+			var n json.Number
+			if err2 := json.Unmarshal(rawVal, &n); err2 == nil {
+				s = n.String()
+			} else {
+				var b bool
+				if err3 := json.Unmarshal(rawVal, &b); err3 == nil {
+					s = strconv.FormatBool(b)
+				} else {
+					continue
+				}
+			}
+		}
+		w.Values[key] = s
+	}
+	// Keep the named fields and Values in sync for legacy callers.
+	w.syncValuesFromNamed()
+	return nil
+}
+
+// MarshalJSON emits the named fields plus every extra Values key so the stored
+// annotation preserves generic fields.
+func (w WorkerGroup) MarshalJSON() ([]byte, error) {
+	out := make(map[string]interface{}, len(w.Values)+4)
+	for k, v := range w.Values {
+		out[k] = v
+	}
+	out["name"] = w.Name
+	if w.Class != "" {
+		out["class"] = w.Class
+	}
+	if w.Flavor != "" {
+		out["flavor"] = w.Flavor
+	}
+	out["replicas"] = w.Replicas
+	return json.Marshal(out)
+}
+
+// syncValuesFromNamed ensures the named legacy fields are mirrored into Values
+// (Values takes precedence when both are present).
+func (w *WorkerGroup) syncValuesFromNamed() {
+	if w.Values == nil {
+		w.Values = make(map[string]string)
+	}
+	if _, ok := w.Values["name"]; !ok && w.Name != "" {
+		w.Values["name"] = w.Name
+	}
+	if _, ok := w.Values["class"]; !ok && w.Class != "" {
+		w.Values["class"] = w.Class
+	}
+	if _, ok := w.Values["flavor"]; !ok && w.Flavor != "" {
+		w.Values["flavor"] = w.Flavor
+	}
+	if _, ok := w.Values["replicas"]; !ok && w.Replicas != 0 {
+		w.Values["replicas"] = strconv.Itoa(int(w.Replicas))
+	}
+	// Backfill named fields from Values for legacy consumers.
+	if w.Name == "" {
+		w.Name = w.Values["name"]
+	}
+	if w.Class == "" {
+		w.Class = w.Values["class"]
+	}
+	if w.Flavor == "" {
+		w.Flavor = w.Values["flavor"]
+	}
+	if w.Replicas == 0 {
+		if r, err := strconv.Atoi(w.Values["replicas"]); err == nil {
+			w.Replicas = int32(r)
+		}
+	}
 }
 
 type CreateClusterRequest struct {
@@ -259,33 +361,37 @@ func (m *Manager) CountControlPlaneReplicas(ctx context.Context) (int32, error) 
 }
 
 func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) error {
-	// Normalise worker groups: if none supplied, fall back to the legacy
-	// single-pool "nodes" field.
+	// Normalise worker groups: if none supplied, synthesise a single default
+	// pool from the worker_group_fields schema defaults and the "nodes" field.
 	if len(req.WorkerGroups) == 0 {
 		nodes := req.Nodes
 		if nodes <= 0 {
 			nodes = 1
 		}
-		defaultFlavor := req.Parameters["workerFlavor"]
-		if defaultFlavor == "" {
-			if flavors := viper.GetStringSlice("cluster.worker_flavors"); len(flavors) > 0 {
-				defaultFlavor = flavors[0]
-			} else {
-				defaultFlavor = "xmedium"
+		values := make(map[string]string)
+		for _, f := range LoadWorkerGroupFields() {
+			if f.Default != "" {
+				values[f.Key] = f.Default
 			}
 		}
-		req.WorkerGroups = []WorkerGroup{
-			{Name: "worker", Flavor: defaultFlavor, Replicas: nodes},
+		if values["name"] == "" {
+			values["name"] = "worker"
 		}
+		values["replicas"] = strconv.Itoa(int(nodes))
+		wg := WorkerGroup{Values: values}
+		wg.syncValuesFromNamed()
+		req.WorkerGroups = []WorkerGroup{wg}
 	}
 
-	// Compute total worker replicas across all groups.
+	// Compute total worker replicas across all groups, keeping Values in sync.
 	totalWorkerReplicas := int32(0)
-	for _, wg := range req.WorkerGroups {
-		if wg.Replicas <= 0 {
-			wg.Replicas = 1
+	for i := range req.WorkerGroups {
+		req.WorkerGroups[i].syncValuesFromNamed()
+		if req.WorkerGroups[i].Replicas <= 0 {
+			req.WorkerGroups[i].Replicas = 1
+			req.WorkerGroups[i].Values["replicas"] = "1"
 		}
-		totalWorkerReplicas += wg.Replicas
+		totalWorkerReplicas += req.WorkerGroups[i].Replicas
 	}
 	req.Nodes = totalWorkerReplicas
 
@@ -357,6 +463,11 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		req.Parameters = make(map[string]string)
 	}
 	defaults := GetParameterDefaults()
+	// Resolve boolean parameters up-front to their configured on/off strings.
+	// This is kept separate from the string-default path because a boolean's
+	// "off" string may legitimately be empty, which the value == "" check below
+	// would otherwise treat as unresolved.
+	boolResolved := resolveBooleanParameters(req.Parameters)
 	resolvedParams := make(map[string]string)
 	const maxIterations = 10
 	for iter := 0; iter < maxIterations; iter++ {
@@ -371,6 +482,15 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 
 			// Already resolved in a previous iteration — skip.
 			if strings.Contains(templateStr, placeholder) == false {
+				continue
+			}
+
+			// Boolean parameters resolve to their on/off string (possibly empty).
+			if bv, ok := boolResolved[strings.ToLower(key)]; ok {
+				resolvedParams[key] = bv
+				slog.Info("Replacing boolean template placeholder", "cluster_name", req.Name, "key", key, "value", bv)
+				templateStr = strings.ReplaceAll(templateStr, placeholder, bv)
+				replaced = true
 				continue
 			}
 
@@ -782,6 +902,83 @@ func (m *Manager) UpdateClusterControlPlaneReplicas(ctx context.Context, cluster
 	return nil
 }
 
+// UpdateClusterParameter writes an editable template parameter's value to the
+// live cluster object at its configured YAML path and records the raw state in
+// the chihiro.io/parameters annotation. For boolean parameters, rawState is the
+// "true"/"false" toggle state and the configured on/off string is written at
+// the path. The parameter must be editable and have a path configured.
+func (m *Manager) UpdateClusterParameter(ctx context.Context, clusterName, namespace, key, rawState string) error {
+	slog.Debug("Updating cluster parameter", "cluster", clusterName, "namespace", namespace, "key", key)
+
+	ef, ok := GetEditableField(viper.GetString("cluster.template"), key)
+	if !ok || !ef.Enabled {
+		return fmt.Errorf("parameter %q is not editable", key)
+	}
+	if ef.Path == "" {
+		return fmt.Errorf("parameter %q has no configured path and cannot be edited", key)
+	}
+
+	// Compute the value written to the object and the state stored in the
+	// annotation (so the UI can re-render the control correctly).
+	var writeValue interface{}
+	storedState := rawState
+	switch ef.Type {
+	case "boolean":
+		if isTruthy(rawState) {
+			writeValue = ef.TrueValue
+			storedState = "true"
+		} else {
+			writeValue = ef.FalseValue
+			storedState = "false"
+		}
+	case "number":
+		if n, err := strconv.Atoi(strings.TrimSpace(rawState)); err == nil {
+			writeValue = int64(n)
+		} else {
+			return fmt.Errorf("parameter %q expects a number", key)
+		}
+	default:
+		writeValue = rawState
+	}
+
+	gvr := m.clusterGVR
+	cluster, err := m.client.Resource(gvr).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
+	if err != nil {
+		slog.Error("Failed to get cluster for parameter update", "cluster", clusterName, "namespace", namespace, "error", err)
+		return fmt.Errorf("failed to get cluster: %v", err)
+	}
+
+	setYAMLPath(cluster.Object, ef.Path, writeValue)
+
+	// Update the persisted parameters annotation so the value round-trips.
+	annotations := cluster.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	params := map[string]string{}
+	if existing, ok := annotations["chihiro.io/parameters"]; ok && existing != "" {
+		if err := json.Unmarshal([]byte(existing), &params); err != nil {
+			slog.Warn("Failed to parse existing parameters annotation; recreating", "cluster", clusterName, "error", err)
+			params = map[string]string{}
+		}
+	}
+	params[key] = storedState
+	if paramsJSON, err := json.Marshal(params); err == nil {
+		annotations["chihiro.io/parameters"] = string(paramsJSON)
+		cluster.SetAnnotations(annotations)
+	} else {
+		slog.Warn("Failed to marshal parameters annotation", "cluster", clusterName, "error", err)
+	}
+
+	if _, err := m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{}); err != nil {
+		slog.Error("Failed to update cluster parameter", "cluster", clusterName, "namespace", namespace, "key", key, "error", err)
+		return fmt.Errorf("failed to update cluster: %v", err)
+	}
+
+	slog.Info("Successfully updated cluster parameter", "cluster", clusterName, "namespace", namespace, "key", key)
+	return nil
+}
+
 // ValidateVersionUpgrade checks if the new version is valid and newer than current version
 func (m *Manager) ValidateVersionUpgrade(ctx context.Context, clusterName, namespace, newVersion string) error {
 	// Get available versions from config
@@ -933,43 +1130,40 @@ func (m *Manager) injectWorkerGroups(obj map[string]interface{}, groups []Worker
 		}
 	}
 
+	fields := LoadWorkerGroupFields()
+	builtins := workerGroupBuiltins(obj)
+
 	machineDeployments := make([]interface{}, 0, len(groups))
 	for _, wg := range groups {
-		replicas := wg.Replicas
-		if replicas <= 0 {
-			replicas = 1
-		}
-		mdClass := wg.Class
-		if mdClass == "" {
-			mdClass = "default-worker"
-		}
-		md := map[string]interface{}{
-			"class":    mdClass,
-			"name":     wg.Name,
-			"replicas": int64(replicas),
-		}
-		// Inject the workerFlavor variable into the variables.overrides
-		// list of each machine deployment so the OpenStack template picks
-		// up the correct flavor per group.  CAPI expects:
-		//   variables:
-		//     overrides:
-		//       - name: workerFlavor
-		//         value: xlarge
-		if wg.Flavor != "" {
-			md["variables"] = map[string]interface{}{
-				"overrides": []interface{}{
-					map[string]interface{}{
-						"name":  "workerFlavor",
-						"value": wg.Flavor,
-					},
-				},
-			}
+		md, err := renderWorkerGroupMachineDeployment(wg, fields, builtins)
+		if err != nil {
+			return err
 		}
 		machineDeployments = append(machineDeployments, md)
 	}
 
 	setYAMLPath(obj, injPath, machineDeployments)
 	return nil
+}
+
+// workerGroupBuiltins collects the {{ chihiro.* }} built-in tokens available to
+// the worker_group_template from the already-rendered cluster object (name and
+// version are the useful ones at injection time).
+func workerGroupBuiltins(obj map[string]interface{}) map[string]string {
+	builtins := map[string]string{}
+	if meta, ok := obj["metadata"].(map[string]interface{}); ok {
+		if name, ok := meta["name"].(string); ok {
+			builtins["name"] = name
+		}
+	}
+	if spec, ok := obj["spec"].(map[string]interface{}); ok {
+		if topology, ok := spec["topology"].(map[string]interface{}); ok {
+			if v, ok := topology["version"].(string); ok {
+				builtins["version"] = v
+			}
+		}
+	}
+	return builtins
 }
 
 // GetWorkerGroups extracts the worker groups from a cluster's annotations.
@@ -1097,14 +1291,33 @@ func setYAMLPath(obj map[string]interface{}, path string, value interface{}) {
 	}
 }
 
-// parseYAMLPath splits a dot-separated path, handling bracket notation.
+// parseYAMLPath splits a dot-separated path, handling bracket notation and
+// single-quoted segments. Quoting lets a single segment contain dots or
+// slashes, which is required for Kubernetes label/annotation keys, e.g.:
+//
+//	metadata.labels.'sveltos.argus.rpcu.io/cilium'
 func parseYAMLPath(path string) []string {
 	var parts []string
-	for _, segment := range strings.Split(path, ".") {
-		if segment != "" {
-			parts = append(parts, segment)
+	var buf strings.Builder
+	inQuote := false
+	flush := func() {
+		if buf.Len() > 0 {
+			parts = append(parts, buf.String())
+			buf.Reset()
 		}
 	}
+	for _, r := range path {
+		switch {
+		case r == '\'':
+			// Toggle quoting; the quote characters themselves are dropped.
+			inQuote = !inQuote
+		case r == '.' && !inQuote:
+			flush()
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	flush()
 	return parts
 }
 

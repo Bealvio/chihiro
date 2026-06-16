@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -20,6 +21,13 @@ type TemplateParameter struct {
 	Editable    bool     `json:"editable"`
 	Min         *int     `json:"min,omitempty"`
 	Max         *int     `json:"max,omitempty"`
+	// TrueValue/FalseValue are the strings substituted into the template for a
+	// boolean parameter when it is on/off (default "true"/"false").
+	TrueValue  string `json:"trueValue,omitempty"`
+	FalseValue string `json:"falseValue,omitempty"`
+	// Path is the YAML path the value is written to on edit. Required for a
+	// parameter to be editable after creation.
+	Path string `json:"path,omitempty"`
 }
 
 type parameterConfig struct {
@@ -32,6 +40,9 @@ type parameterConfig struct {
 	Editable    bool     `mapstructure:"editable"`
 	Min         *int     `mapstructure:"min"`
 	Max         *int     `mapstructure:"max"`
+	TrueValue   string   `mapstructure:"true_value"`
+	FalseValue  string   `mapstructure:"false_value"`
+	Path        string   `mapstructure:"path"`
 }
 
 func DiscoverParameters(templateStr string) []TemplateParameter {
@@ -92,6 +103,13 @@ func DiscoverParameters(templateStr string) []TemplateParameter {
 			p.Editable = cfg.Editable
 			p.Min = cfg.Min
 			p.Max = cfg.Max
+			p.Path = cfg.Path
+			if p.Type == "boolean" {
+				p.TrueValue, p.FalseValue = boolValueStrings(cfg)
+				// For booleans the default is the on/off state ("true"/"false"),
+				// not the substituted string, so the checkbox renders correctly.
+				p.Default = normalizeBool(cfg.Default)
+			}
 		} else {
 			p.Label = humanizeKey(key)
 		}
@@ -171,13 +189,16 @@ func loadParameterConfig() map[string]parameterConfig {
 		cfg := parameterConfig{
 			Label:       getString(fields, "label"),
 			Description: getString(fields, "description"),
-			Default:     getString(fields, "default"),
+			Default:     getScalarString(fields, "default"),
 			Type:        getString(fields, "type"),
 			Required:    getBool(fields, "required"),
 			Options:     getStringSlice(fields, "options"),
 			Editable:    getBool(fields, "editable"),
 			Min:         getIntPtr(fields, "min"),
 			Max:         getIntPtr(fields, "max"),
+			TrueValue:   getScalarString(fields, "true_value"),
+			FalseValue:  getScalarString(fields, "false_value"),
+			Path:        getString(fields, "path"),
 		}
 		result[key] = cfg
 	}
@@ -189,6 +210,92 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+// getScalarString reads a value that may be written in YAML as a string, bool,
+// or number (e.g. `default: true` or `false_value: disabled`) and returns its
+// string form. Missing keys return "".
+func getScalarString(m map[string]interface{}, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return ""
+	}
+}
+
+// boolValueStrings returns the on/off substitution strings for a boolean
+// parameter, defaulting to "true"/"false" when unset.
+func boolValueStrings(cfg parameterConfig) (trueValue, falseValue string) {
+	trueValue = cfg.TrueValue
+	if trueValue == "" {
+		trueValue = "true"
+	}
+	falseValue = cfg.FalseValue
+	if falseValue == "" {
+		falseValue = "false"
+	}
+	return trueValue, falseValue
+}
+
+// resolveBooleanParameters returns, for every boolean parameter declared in
+// cluster.parameters, the configured on/off string to substitute into the
+// template. The user-supplied value (in params, keyed case-insensitively) wins;
+// otherwise the parameter's default state is used. Keys are lowercased.
+func resolveBooleanParameters(params map[string]string) map[string]string {
+	out := make(map[string]string)
+	// Index incoming params case-insensitively.
+	lowered := make(map[string]string, len(params))
+	for k, v := range params {
+		lowered[strings.ToLower(k)] = v
+	}
+	for key, cfg := range loadParameterConfig() {
+		if cfg.Type != "boolean" {
+			continue
+		}
+		trueValue, falseValue := boolValueStrings(cfg)
+		state, ok := lowered[strings.ToLower(key)]
+		if !ok {
+			state = cfg.Default
+		}
+		if isTruthy(state) {
+			out[strings.ToLower(key)] = trueValue
+		} else {
+			out[strings.ToLower(key)] = falseValue
+		}
+	}
+	return out
+}
+
+// isTruthy reports whether a raw string represents an "on" boolean state.
+func isTruthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeBool maps any truthy/falsy string to the canonical "true"/"false"
+// used by the checkbox UI and default handling.
+func normalizeBool(s string) string {
+	if isTruthy(s) {
+		return "true"
+	}
+	return "false"
 }
 
 func getBool(m map[string]interface{}, key string) bool {

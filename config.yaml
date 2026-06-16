@@ -33,16 +33,74 @@ cluster:
     max_clusters: 5
     max_total_nodes: 10
     max_total_cp: 9
-  # Available OpenStack flavors for worker group node pools.
-  worker_flavors:
-    - small
-    - medium
-    - xmedium
-    - large
-    - xlarge
-  # Available machine deployment classes for worker groups.
-  worker_classes:
-    - default-worker
+  # Per-worker-group form fields shown in the create/edit UI. Each entry only
+  # describes one input; WHERE its value lands in the CAPI machineDeployment is
+  # decided entirely by worker_group_template below. This keeps the two
+  # concerns separate: fields = what the user types, template = the YAML shape.
+  #
+  # Per-field keys:
+  #   label:    UI label (defaults to a humanized key)
+  #   type:     input type — "string" | "number" | "select"
+  #   options:  allowed values when type is "select" (list of strings)
+  #   default:  pre-filled value in the form
+  #   required: when true, the field must be non-empty (default false)
+  #   min/max:  numeric bounds when type is "number"
+  #   order:    integer controlling left-to-right display order (lower first;
+  #             ties broken alphabetically by key)
+  #
+  # Add a new field by adding an entry here and referencing it in the template
+  # as {{ chihiro.field.<key> }}.
+  worker_group_fields:
+    name:
+      label: "Group name"
+      type: string
+      required: true
+      order: 0
+    class:
+      label: "Class"
+      type: select
+      options:
+        - default-worker
+      default: default-worker
+      order: 1
+    flavor:
+      label: "Flavor"
+      type: select
+      options:
+        - small
+        - medium
+        - xmedium
+        - large
+        - xlarge
+      default: xmedium
+      order: 2
+    replicas:
+      label: "Replicas"
+      type: number
+      default: "1"
+      min: 1
+      max: 10
+      order: 3
+  # YAML template for ONE machineDeployment entry. It is rendered once per
+  # worker group and appended to spec.topology.workers.machineDeployments.
+  #
+  # Placeholders:
+  #   {{ chihiro.field.<key> }}  -> the value the user entered for that field
+  #                                 (numbers are emitted unquoted)
+  #   {{ chihiro.* }}            -> the same built-ins available in the cluster
+  #                                 template (name, version, ...)
+  #
+  # This is the only place that knows your ClusterClass shape: to drop the
+  # ClusterClass patch, just remove the variables.overrides block; to expose a
+  # new variable, add it here and a matching field above.
+  worker_group_template: |
+    name: {{ chihiro.field.name }}
+    class: {{ chihiro.field.class }}
+    replicas: {{ chihiro.field.replicas }}
+    variables:
+      overrides:
+        - name: workerFlavor
+          value: {{ chihiro.field.flavor }}
   # Built-in cluster fields injected at the given YAML path after the template
   # is parsed. Set editable: true to expose a post-creation edit button in the
   # UI and allow the matching API to accept changes; min/max bound numeric
@@ -77,8 +135,8 @@ cluster:
     metadata:
       namespace: mgmt
       labels:
-        sveltos.argus.rpcu.io/oidc-rbac: enabled
-        sveltos.argus.rpcu.io/cilium: enabled
+        sveltos.argus.rpcu.io/oidc-rbac: {{ chihiro.oidcRbac }}
+        sveltos.argus.rpcu.io/cilium: {{ chihiro.cilium }}
         type: workload
     spec:
       clusterNetwork:
@@ -125,10 +183,36 @@ cluster:
     imageName:
       label: "Node Image"
       description: "OpenStack image for cluster nodes"
-      type: string
+      type: select
+      options:
+        - "hephaestus-kaas-25.11-{{ chihiro.version }}"
+        - "hephaestus-kaas-26.05-{{ chihiro.version }}"
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"
       description: "CIDR block for the managed subnet"
       type: string
       default: "192.168.1.0/24"
+    # Boolean (checkbox) addon toggles. Rendered as on/off tickboxes; the
+    # configured true_value/false_value strings are substituted into the
+    # template at {{ chihiro.<key> }}. Setting editable + path lets the toggle
+    # be flipped after creation (the value is written to that YAML path on the
+    # live Cluster). Label keys contain dots, so single-quote that path segment.
+    cilium:
+      label: "Cilium CNI"
+      description: "Enable the Cilium addon via Sveltos"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/cilium'"
+    oidcRbac:
+      label: "OIDC RBAC"
+      description: "Enable OIDC RBAC addon via Sveltos"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/oidc-rbac'"

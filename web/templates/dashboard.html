@@ -532,13 +532,15 @@
 
         .wg-details {
             display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             align-items: center;
         }
 
         .wg-details select,
         .wg-details input {
-            flex: 1;
+            flex: 1 1 90px;
+            min-width: 80px;
             padding: 5px 8px;
             border: 1px solid var(--md-sys-color-outline);
             border-radius: 6px;
@@ -546,14 +548,49 @@
             font-size: 0.8rem;
         }
 
-        .wg-details .wg-replicas {
-            flex: 0 0 60px;
+        .wg-details input[type="number"] {
+            flex: 0 0 70px;
+            min-width: 0;
         }
 
         .wg-details .wg-label {
             font-size: 0.75rem;
             color: var(--md-sys-color-on-surface-variant);
             flex: 0 0 auto;
+        }
+
+        .bool-chips-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .bool-chip-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .bool-chip-label {
+            font-size: 0.8rem;
+            color: var(--md-sys-color-on-surface);
+        }
+        .bool-chip-item .edit-btn {
+            margin-left: -2px;
+        }
+        .param-bool {
+            display: inline-block;
+            padding: 1px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .param-bool.on {
+            background: var(--md-sys-color-primary, #6750a4);
+            color: var(--md-sys-color-on-primary, #fff);
+        }
+        .param-bool.off {
+            background: var(--md-sys-color-surface-variant, #e7e0ec);
+            color: var(--md-sys-color-on-surface-variant, #49454f);
         }
 
         /* Responsive */
@@ -797,6 +834,22 @@
         </div>
     </div>
 
+    <!-- Edit Parameter Modal (generic) -->
+    <div class="modal-overlay" id="editParameterModalOverlay">
+        <div class="modal">
+            <h3 id="editParameterTitle">Edit Parameter</h3>
+            <p>Cluster <strong id="editParameterClusterName"></strong></p>
+            <form id="editParameterForm">
+                <div class="form-group" id="editParameterField"></div>
+                <small id="editParameterDescription" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 16px;"></small>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditParameterModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Delete Confirmation Modal -->
     <div class="modal-overlay" id="deleteModalOverlay">
         <div class="modal">
@@ -822,8 +875,7 @@
         let editClusterData = null;
         let clusterParameters = [];
         let editableFields = {}; // key -> { enabled, min, max } from /api/cluster/editable
-        let workerFlavors = [];  // available OpenStack flavors from /api/cluster/worker-flavors
-        let workerClasses = [];  // available machine deployment classes from /api/cluster/worker-classes
+        let workerGroupFields = []; // config-driven worker-group form schema from /api/cluster/worker-group-fields
 
         // Initialize everything when page loads
         document.addEventListener('DOMContentLoaded', function() {
@@ -832,8 +884,7 @@
                 loadUserGroups();
                 loadUserPermissions();
                 loadClusterParameters();
-                loadWorkerFlavors();
-                loadWorkerClasses();
+                loadWorkerGroupFields();
                 loadEditableFields();
                 loadConfig();
                 connectWebSocket();
@@ -1042,8 +1093,27 @@
 
         // Render the collapsible "More details" section listing every parameter
         // that was set for the cluster at creation time.
+        function extractLabelValue(path, labels) {
+            if (!path || !labels) return undefined;
+            const m = path.match(/^metadata\.labels\.'([^']+)'$/);
+            return m ? labels[m[1]] : undefined;
+        }
+
         function renderMoreDetails(cluster) {
-            const params = cluster.parameters || {};
+            const params = Object.assign({}, cluster.parameters || {});
+            // Merge boolean parameters whose values live in cluster labels
+            // (not in the chihiro.io/parameters annotation) so they show in
+            // the "More details" section.
+            (clusterParameters || []).forEach(p => {
+                if (p.type === 'boolean' && p.key) {
+                    const keyLower = p.key.toLowerCase();
+                    const exists = Object.keys(params).some(k => k.toLowerCase() === keyLower);
+                    if (!exists) {
+                        const val = extractLabelValue(p.path, cluster.labels);
+                        if (val !== undefined) params[p.key] = String(val);
+                    }
+                }
+            });
             const keys = Object.keys(params)
                 .filter(key => !MORE_DETAILS_EXCLUDE.has(key.toLowerCase()))
                 .sort();
@@ -1051,12 +1121,52 @@
 
             const id = `more-${cluster.namespace}-${cluster.name}`;
             const isExpanded = expandedDetails.has(id);
-            const rows = keys.map(key => `
+            const nameJs = escapeJs(cluster.name);
+            const nsJs = escapeJs(cluster.namespace);
+            const boolKeys = [];
+            const otherKeys = [];
+            keys.forEach(key => {
+                const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+                const rawVal = String(params[key]).toLowerCase();
+                const matchesTrueValue = meta && meta.trueValue && String(params[key]) === meta.trueValue;
+                if ((meta && meta.type === 'boolean') || rawVal === 'true' || rawVal === 'false' || matchesTrueValue) {
+                    boolKeys.push(key);
+                } else {
+                    otherKeys.push(key);
+                }
+            });
+
+            const boolChips = boolKeys.map(key => {
+                const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+                const editable = canEditField(cluster, key);
+                const on = meta
+                    ? (params[key] === 'true' || params[key] === meta.trueValue)
+                    : (String(params[key]).toLowerCase() === 'true');
+                const editBtn = editable
+                    ? `<button class="edit-btn" onclick="openEditParameterModal('${nameJs}', '${nsJs}', '${escapeJs(key)}')"><span class="material-symbols-outlined">edit</span></button>`
+                    : '';
+                return `<span class="bool-chip-item">${editBtn}<span class="param-bool ${on ? 'on' : 'off'}">${on ? 'On' : 'Off'}</span><span class="bool-chip-label">${escapeHtml(parameterLabel(key))}</span></span>`;
+            }).join('');
+
+            const boolRow = boolKeys.length > 0
+                ? `<div class="detail-item full-width"><div class="detail-label" style="margin-bottom: 8px;">Options</div><div class="bool-chips-row">${boolChips}</div></div>`
+                : '';
+
+            const otherRows = otherKeys.map(key => {
+                const editable = canEditField(cluster, key);
+                const valueHtml = escapeHtml(params[key]);
+                const editBtn = editable
+                    ? `<button class="edit-btn" onclick="openEditParameterModal('${nameJs}', '${nsJs}', '${escapeJs(key)}')"><span class="material-symbols-outlined">edit</span></button>`
+                    : '';
+                return `
                 <div class="detail-item">
-                    <div class="detail-label">${escapeHtml(parameterLabel(key))}</div>
-                    <div class="detail-value">${escapeHtml(params[key])}</div>
+                    <div class="detail-label">${escapeHtml(parameterLabel(key))}${editBtn}</div>
+                    <div class="detail-value">${valueHtml}</div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
+
+            const rows = boolRow + otherRows;
 
             return `
                 <button class="more-details-toggle ${isExpanded ? 'expanded' : ''}" onclick="toggleMoreDetails('${id}', this)">
@@ -1430,10 +1540,11 @@
             loadLimitsInfo(); // Load and display limits
             renderDynamicParameters();
 
-            // Initialize worker groups editor with one default group
+            // Initialize worker groups editor with one default group seeded
+            // from the schema defaults.
             document.getElementById('createWorkerGroups').innerHTML = '';
             createGroupIndex = 0;
-            addCreateWorkerGroup('worker', 'default-worker', '', 1);
+            addCreateWorkerGroup(defaultWorkerGroupValues());
 
             if (isAdmin) {
                 console.log('Admin user - showing text input');
@@ -1490,11 +1601,36 @@
 
         let editNodesData = null;
 
+        // Seed values for a brand-new worker group from the schema defaults.
+        function defaultWorkerGroupValues() {
+            const values = {};
+            workerGroupFieldSchema().forEach(f => {
+                if (f.default !== undefined && f.default !== null && f.default !== '') {
+                    values[f.key] = f.default;
+                }
+            });
+            if (values.name === undefined) values.name = 'worker';
+            return values;
+        }
+
         function formatWorkerGroups(groups, totalNodes) {
             if (!groups || groups.length === 0) {
                 return totalNodes || 0;
             }
-            return groups.map(g => `${Number(g.replicas) || 0}x ${escapeHtml(g.flavor)} (${escapeHtml(g.class || 'default-worker')})`).join(', ');
+            const schema = workerGroupFieldSchema();
+            // Summarise each group using the configured fields (skipping name,
+            // which is shown as the group identifier).
+            return groups.map(g => {
+                const replicas = Number(g.replicas) || 0;
+                const parts = schema
+                    .filter(f => f.key !== 'name' && f.key !== 'replicas')
+                    .map(f => g[f.key])
+                    .filter(v => v !== undefined && v !== null && v !== '')
+                    .map(v => escapeHtml(String(v)));
+                const label = g.name ? escapeHtml(String(g.name)) : '';
+                const detail = parts.length > 0 ? ` ${parts.join(' / ')}` : '';
+                return `${replicas}x${detail}${label ? ` [${label}]` : ''}`;
+            }).join(', ');
         }
 
         function openEditWorkerGroupsModal(name, namespace) {
@@ -1507,10 +1643,11 @@
 
             const container = document.getElementById('editWorkerGroupsList');
             container.innerHTML = '';
+            editGroupIndex = 0;
             if (groups.length === 0) {
-                addEditWorkerGroup();
+                addEditWorkerGroup(defaultWorkerGroupValues());
             } else {
-                groups.forEach(g => addEditWorkerGroup(g.name, g.class, g.flavor, g.replicas));
+                groups.forEach(g => addEditWorkerGroup(g));
             }
 
             document.getElementById('editWorkerGroupsModalOverlay').style.display = 'flex';
@@ -1538,13 +1675,15 @@
 
         let createGroupIndex = 0;
 
-        function addCreateWorkerGroup(name, cls, flavor, replicas) {
+        // values is an object keyed by worker-group field key (e.g.
+        // { name: 'worker', flavor: 'xmedium', replicas: 1 }).
+        function addCreateWorkerGroup(values) {
             const container = document.getElementById('createWorkerGroups');
             const idx = createGroupIndex++;
             const div = document.createElement('div');
             div.className = 'worker-group-row';
             div.id = `create-wg-${idx}`;
-            div.innerHTML = workerGroupRowHTML(idx, name || '', cls || '', flavor || '', replicas || 1, 'create');
+            div.innerHTML = workerGroupRowHTML(idx, values || {}, 'create');
             container.appendChild(div);
         }
 
@@ -1555,13 +1694,13 @@
 
         let editGroupIndex = 0;
 
-        function addEditWorkerGroup(name, cls, flavor, replicas) {
+        function addEditWorkerGroup(values) {
             const container = document.getElementById('editWorkerGroupsList');
             const idx = editGroupIndex++;
             const div = document.createElement('div');
             div.className = 'worker-group-row';
             div.id = `edit-wg-${idx}`;
-            div.innerHTML = workerGroupRowHTML(idx, name || '', cls || '', flavor || '', replicas || 1, 'edit');
+            div.innerHTML = workerGroupRowHTML(idx, values || {}, 'edit');
             container.appendChild(div);
         }
 
@@ -1570,27 +1709,71 @@
             if (el) el.remove();
         }
 
-        function workerGroupRowHTML(idx, name, cls, flavor, replicas, prefix) {
-            const classInput = workerClasses.length > 0
-                ? `<select id="${prefix}-wg-class-${idx}" class="wg-class">${workerClasses.map(c => `<option value="${c}" ${c === cls ? 'selected' : ''}>${c}</option>`).join('')}</select>`
-                : `<input type="text" id="${prefix}-wg-class-${idx}" class="wg-class" value="${escapeHtml(cls || 'default-worker')}" placeholder="default-worker">`;
-            const flavorInput = workerFlavors.length > 0
-                ? `<select id="${prefix}-wg-flavor-${idx}" class="wg-flavor">${workerFlavors.map(f => `<option value="${f}" ${f === flavor ? 'selected' : ''}>${f}</option>`).join('')}</select>`
-                : `<input type="text" id="${prefix}-wg-flavor-${idx}" class="wg-flavor" value="${escapeHtml(flavor)}" placeholder="e.g. xmedium">`;
+        // Returns the worker-group field schema, falling back to the legacy
+        // name/class/flavor/replicas layout if config hasn't loaded yet.
+        function workerGroupFieldSchema() {
+            if (workerGroupFields && workerGroupFields.length > 0) {
+                return workerGroupFields;
+            }
+            return [
+                { key: 'name', label: 'Group name', type: 'string', required: true },
+                { key: 'class', label: 'Class', type: 'string', default: 'default-worker' },
+                { key: 'flavor', label: 'Flavor', type: 'string' },
+                { key: 'replicas', label: 'Replicas', type: 'number', default: '1', min: 1, max: 10 }
+            ];
+        }
+
+        function workerGroupFieldInputHTML(field, idx, prefix, value) {
+            const id = `${prefix}-wg-${field.key}-${idx}`;
+            const cls = `wg-field wg-field-${field.key}`;
+            const val = (value !== undefined && value !== null) ? String(value) : '';
+            if (field.type === 'select' && field.options && field.options.length > 0) {
+                const opts = field.options.map(o =>
+                    `<option value="${escapeHtml(o)}" ${o === val ? 'selected' : ''}>${escapeHtml(o)}</option>`
+                ).join('');
+                return `<select id="${id}" class="${cls}" data-key="${escapeHtml(field.key)}">${opts}</select>`;
+            }
+            if (field.type === 'number') {
+                const min = (field.min != null) ? ` min="${field.min}"` : '';
+                const max = (field.max != null) ? ` max="${field.max}"` : '';
+                const shown = val || (field.default || '');
+                return `<input type="number" id="${id}" class="${cls}" data-key="${escapeHtml(field.key)}" value="${escapeHtml(shown)}"${min}${max}>`;
+            }
+            return `<input type="text" id="${id}" class="${cls}" data-key="${escapeHtml(field.key)}" value="${escapeHtml(val)}" placeholder="${escapeHtml(field.label || field.key)}">`;
+        }
+
+        function workerGroupRowHTML(idx, values, prefix) {
+            const schema = workerGroupFieldSchema();
+            const nameField = schema.find(f => f.key === 'name');
+            const otherFields = schema.filter(f => f.key !== 'name');
+
+            // Render the name field (if present) inline in the header next to the
+            // delete button; everything else goes in the details row.
+            let headerInput;
+            if (nameField) {
+                const nameVal = (values && values.name !== undefined) ? values.name : (nameField.default || '');
+                headerInput = workerGroupFieldInputHTML(nameField, idx, prefix, nameVal).replace('class="wg-field', 'class="wg-name wg-field');
+            } else {
+                headerInput = '<span></span>';
+            }
+
+            const details = otherFields.map(f => {
+                let v = (values && values[f.key] !== undefined) ? values[f.key] : (f.default || '');
+                return `
+                    <span class="wg-label">${escapeHtml(f.label || f.key)}</span>
+                    ${workerGroupFieldInputHTML(f, idx, prefix, v)}
+                `;
+            }).join('');
+
             return `
                 <div class="wg-header">
-                    <input type="text" id="${prefix}-wg-name-${idx}" class="wg-name" value="${escapeHtml(name)}" placeholder="Group name">
+                    ${headerInput}
                     <button type="button" class="edit-btn" onclick="remove${prefix === 'create' ? 'Create' : 'Edit'}WorkerGroup(${idx})" style="color: var(--md-sys-color-error); border-color: var(--md-sys-color-error); flex: 0 0 auto;">
                         <span class="material-symbols-outlined">delete</span>
                     </button>
                 </div>
                 <div class="wg-details">
-                    <span class="wg-label">Class</span>
-                    ${classInput}
-                    <span class="wg-label">Flavor</span>
-                    ${flavorInput}
-                    <span class="wg-label">x</span>
-                    <input type="number" id="${prefix}-wg-replicas-${idx}" class="wg-replicas" value="${replicas}" min="1" max="10">
+                    ${details}
                 </div>
             `;
         }
@@ -1600,12 +1783,20 @@
             const rows = container.querySelectorAll('.worker-group-row');
             const groups = [];
             rows.forEach(row => {
-                const name = row.querySelector('.wg-name').value.trim();
-                const cls = row.querySelector('.wg-class').value.trim();
-                const flavor = row.querySelector('.wg-flavor').value.trim();
-                const replicas = parseInt(row.querySelector('.wg-replicas').value) || 1;
-                if (name) {
-                    groups.push({ name, class: cls, flavor, replicas });
+                const group = {};
+                row.querySelectorAll('.wg-field').forEach(input => {
+                    const key = input.getAttribute('data-key');
+                    if (!key) return;
+                    let value = input.value.trim();
+                    if (input.type === 'number') {
+                        group[key] = parseInt(value) || 0;
+                    } else {
+                        group[key] = value;
+                    }
+                });
+                // A group needs a name to be meaningful.
+                if (group.name) {
+                    groups.push(group);
                 }
             });
             return groups;
@@ -1660,6 +1851,68 @@
         function closeEditVersionModal() {
             document.getElementById('editVersionModalOverlay').style.display = 'none';
             editVersionData = null;
+        }
+
+        // Generic editable-parameter modal.
+        let editParameterData = null;
+
+        function openEditParameterModal(name, namespace, key) {
+            const cluster = currentClustersList.find(c => c.name === name && c.namespace === namespace);
+            const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+            const editMeta = editableFields[key.toLowerCase()] || {};
+            const type = (meta && meta.type) || editMeta.type || 'string';
+            const current = (cluster && cluster.parameters && cluster.parameters[key] !== undefined)
+                ? cluster.parameters[key] : (meta ? meta.default : '');
+
+            editParameterData = { name, namespace, key, type };
+
+            document.getElementById('editParameterTitle').textContent =
+                'Edit ' + ((meta && meta.label) || parameterLabel(key));
+            document.getElementById('editParameterClusterName').textContent = name;
+            document.getElementById('editParameterDescription').textContent =
+                (meta && meta.description) || '';
+
+            const field = document.getElementById('editParameterField');
+            field.innerHTML = '';
+
+            if (type === 'boolean') {
+                const on = (current === 'true' || (meta && current === meta.trueValue));
+                const label = document.createElement('label');
+                label.style.display = 'flex';
+                label.style.alignItems = 'center';
+                label.style.gap = '8px';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.id = 'editParameterInput';
+                cb.style.width = 'auto';
+                cb.checked = on;
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode((meta && meta.label) || parameterLabel(key)));
+                field.appendChild(label);
+            } else if (type === 'select' && meta && meta.options && meta.options.length > 0) {
+                const sel = document.createElement('select');
+                sel.id = 'editParameterInput';
+                meta.options.forEach(opt => {
+                    const o = document.createElement('option');
+                    o.value = opt; o.textContent = opt;
+                    if (opt === current) o.selected = true;
+                    sel.appendChild(o);
+                });
+                field.appendChild(sel);
+            } else {
+                const input = document.createElement('input');
+                input.type = type === 'number' ? 'number' : 'text';
+                input.id = 'editParameterInput';
+                input.value = current || '';
+                field.appendChild(input);
+            }
+
+            document.getElementById('editParameterModalOverlay').style.display = 'flex';
+        }
+
+        function closeEditParameterModal() {
+            document.getElementById('editParameterModalOverlay').style.display = 'none';
+            editParameterData = null;
         }
 
         function populateUpgradeVersions(currentVersion) {
@@ -1847,31 +2100,17 @@
                 });
         }
 
-        function loadWorkerFlavors() {
-            fetch('/api/cluster/worker-flavors', {
+        function loadWorkerGroupFields() {
+            fetch('/api/cluster/worker-group-fields', {
                 credentials: 'include'
             })
                 .then(response => response.json())
                 .then(data => {
-                    workerFlavors = data.flavors || [];
+                    workerGroupFields = (data && data.fields) || [];
                 })
                 .catch(error => {
-                    console.error('Error loading worker flavors:', error);
-                    workerFlavors = [];
-                });
-        }
-
-        function loadWorkerClasses() {
-            fetch('/api/cluster/worker-classes', {
-                credentials: 'include'
-            })
-                .then(response => response.json())
-                .then(data => {
-                    workerClasses = data.classes || [];
-                })
-                .catch(error => {
-                    console.error('Error loading worker classes:', error);
-                    workerClasses = [];
+                    console.error('Error loading worker group fields:', error);
+                    workerGroupFields = [];
                 });
         }
 
@@ -1933,7 +2172,7 @@
             const previousValues = {};
             clusterParameters.forEach(p => {
                 const el = document.getElementById('param_' + p.key);
-                if (el) previousValues[p.key] = el.value;
+                if (el) previousValues[p.key] = (el.type === 'checkbox') ? String(el.checked) : el.value;
             });
 
             container.innerHTML = '';
@@ -1960,8 +2199,9 @@
                 const hadPrevious = Object.prototype.hasOwnProperty.call(previousValues, p.key);
                 const previousValue = hadPrevious ? previousValues[p.key] : undefined;
                 const previousDefault = paramResolvedDefaults[p.key];
+                const isAutoResolved = p.default && /\{\{\s*chihiro\.\w+\s*\}\}/.test(p.default);
                 let valueToApply;
-                if (!hadPrevious) {
+                if (!hadPrevious || isAutoResolved) {
                     valueToApply = resolvedDefault;
                 } else if (previousValue === '' || previousValue === previousDefault) {
                     valueToApply = resolvedDefault;
@@ -1971,7 +2211,23 @@
                 paramResolvedDefaults[p.key] = resolvedDefault;
 
                 let input;
-                if (p.type === 'select' && p.options && p.options.length > 0) {
+                if (p.type === 'boolean') {
+                    // Render a checkbox; the value collected is "true"/"false".
+                    input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.id = 'param_' + p.key;
+                    input.style.width = 'auto';
+                    input.style.marginRight = '8px';
+                    // valueToApply is "true"/"false" (string).
+                    const isOn = (valueToApply === undefined || valueToApply === '')
+                        ? (p.default === 'true')
+                        : (valueToApply === 'true' || valueToApply === true);
+                    input.checked = isOn;
+                    // Put the checkbox before the label text for a natural layout.
+                    label.style.display = 'flex';
+                    label.style.alignItems = 'center';
+                    label.insertBefore(input, label.firstChild);
+                } else if (p.type === 'select' || (isAutoResolved && p.options && p.options.length > 0)) {
                     input = document.createElement('select');
                     input.id = 'param_' + p.key;
                     if (!p.required) {
@@ -1981,10 +2237,11 @@
                         input.appendChild(emptyOpt);
                     }
                     p.options.forEach(opt => {
+                        const resolved = isAutoResolved ? resolveParameterValue(opt, builtins) : opt;
                         const option = document.createElement('option');
-                        option.value = opt;
-                        option.textContent = opt;
-                        if (opt === valueToApply) option.selected = true;
+                        option.value = resolved;
+                        option.textContent = resolved;
+                        if (resolved === valueToApply) option.selected = true;
                         input.appendChild(option);
                     });
                 } else {
@@ -1995,8 +2252,20 @@
                     if (valueToApply) input.value = valueToApply;
                     if (p.type === 'number') input.min = '0';
                 }
-                if (p.required) input.required = true;
-                group.appendChild(input);
+                if (p.required && p.type !== 'boolean') input.required = true;
+                // Auto-resolved params (defaults containing chihiro variable refs) always
+                // resolve the variable part; the user can still edit the non-variable
+                // prefix/suffix but the variable is never removable.
+                if (isAutoResolved && p.type !== 'boolean' && input.tagName !== 'SELECT') {
+                    input.placeholder = p.default;
+                    input.value = resolvedDefault;
+                    input.style.fontStyle = 'italic';
+                    input.style.color = 'var(--md-sys-color-on-surface-variant)';
+                }
+                // Booleans were already placed inside the label above.
+                if (p.type !== 'boolean') {
+                    group.appendChild(input);
+                }
 
                 if (p.description) {
                     const small = document.createElement('small');
@@ -2004,6 +2273,15 @@
                     small.style.fontSize = '0.8rem';
                     small.textContent = p.description;
                     group.appendChild(small);
+                }
+
+                if (isAutoResolved) {
+                    const note = document.createElement('small');
+                    note.style.color = 'var(--md-sys-color-primary)';
+                    note.style.fontSize = '0.75rem';
+                    note.style.fontStyle = 'italic';
+                    note.textContent = 'Variable ' + p.default.match(/\{\{[^}]+\}\}/)[0] + ' always resolves to the selected version';
+                    group.appendChild(note);
                 }
 
                 container.appendChild(group);
@@ -2047,9 +2325,16 @@
 
             // Collect dynamic template parameters
             const parameters = {};
+            const builtins = { version: document.getElementById('clusterVersion').value || '' };
             clusterParameters.forEach(p => {
                 const el = document.getElementById('param_' + p.key);
-                if (el && el.value) {
+                if (p.type === 'boolean') {
+                    // Always send the explicit on/off state for booleans.
+                    parameters[p.key] = (el ? el.checked : (p.default === 'true')) ? 'true' : 'false';
+                } else if (p.default && /\{\{\s*chihiro\.\w+\s*\}\}/.test(p.default)) {
+                    // Auto-resolved params always send the resolved value.
+                    parameters[p.key] = resolveParameterValue(p.default, builtins);
+                } else if (el && el.value) {
                     parameters[p.key] = el.value;
                 } else if (p.default) {
                     parameters[p.key] = p.default;
@@ -2247,6 +2532,46 @@
             .catch(error => {
                 console.error('Error updating version:', error);
                 alert('Failed to update cluster version: ' + error.message);
+            });
+        });
+
+        document.getElementById('editParameterForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            if (!editParameterData) return;
+
+            const input = document.getElementById('editParameterInput');
+            let value;
+            if (editParameterData.type === 'boolean') {
+                value = input.checked ? 'true' : 'false';
+            } else {
+                value = input.value;
+            }
+
+            const url = `/api/clusters/${encodeURIComponent(editParameterData.name)}/parameter`
+                + `?namespace=${encodeURIComponent(editParameterData.namespace)}`;
+            fetch(url, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    namespace: editParameterData.namespace,
+                    key: editParameterData.key,
+                    value: value
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    closeEditParameterModal();
+                    loadClusters();
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to update parameter');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error updating parameter:', error);
+                alert('Failed to update parameter: ' + error.message);
             });
         });
 

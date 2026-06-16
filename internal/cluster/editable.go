@@ -15,6 +15,16 @@ type EditableField struct {
 	Enabled bool   `json:"enabled"`
 	Min     *int   `json:"min,omitempty"`
 	Max     *int   `json:"max,omitempty"`
+	// The following describe an editable template parameter (empty for built-in
+	// injection fields). Type is e.g. "string"/"number"/"select"/"boolean";
+	// Path is where the value is written; TrueValue/FalseValue apply to
+	// booleans; Options applies to selects.
+	Type       string   `json:"type,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Options    []string `json:"options,omitempty"`
+	TrueValue  string   `json:"trueValue,omitempty"`
+	FalseValue string   `json:"falseValue,omitempty"`
+	Label      string   `json:"label,omitempty"`
 }
 
 // injectionConfig is a single cluster.injections entry. path is the YAML path
@@ -110,12 +120,24 @@ func GetEditableFields(templateStr string) []EditableField {
 		if c, ok := casing[strings.ToLower(key)]; ok {
 			outKey = c
 		}
-		fields = append(fields, EditableField{
+		ptype := cfg.Type
+		if ptype == "" {
+			ptype = "string"
+		}
+		ef := EditableField{
 			Key:     outKey,
 			Enabled: true,
 			Min:     cfg.Min,
 			Max:     cfg.Max,
-		})
+			Type:    ptype,
+			Path:    cfg.Path,
+			Options: cfg.Options,
+			Label:   cfg.Label,
+		}
+		if ptype == "boolean" {
+			ef.TrueValue, ef.FalseValue = boolValueStrings(cfg)
+		}
+		fields = append(fields, ef)
 	}
 
 	return fields
