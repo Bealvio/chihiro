@@ -2152,33 +2152,33 @@
             });
         }
 
-        // filterVersionDropdown restricts the #clusterVersion dropdown to only
-        // options whose value is in the compatibleVersions list. Pass null to
-        // show all versions. Auto-selects the first compatible version if the
+        // filterImageDropdown greys out image options whose versions list does
+        // not include the currently selected Kubernetes version. Pass null to
+        // enable all options. Auto-selects the first compatible image if the
         // current selection is no longer compatible.
-        function filterVersionDropdown(compatibleVersions) {
-            const versionSelect = document.getElementById('clusterVersion');
-            if (!versionSelect) return;
-            const allOptions = Array.from(versionSelect.options);
-            let currentVal = versionSelect.value;
-            let foundCompatible = false;
-
-            allOptions.forEach(opt => {
-                if (!opt.value) return; // skip placeholder
-                const isCompatible = !compatibleVersions || compatibleVersions.includes(opt.value);
-                opt.hidden = !isCompatible;
-                opt.disabled = !isCompatible;
-                if (opt.value === currentVal && isCompatible) foundCompatible = true;
-            });
-
-            // Auto-select first compatible version if current is no longer valid.
-            if (!foundCompatible) {
-                const firstCompatible = allOptions.find(o => o.value && !o.hidden);
-                if (firstCompatible) {
-                    versionSelect.value = firstCompatible.value;
-                    versionSelect.dispatchEvent(new Event('change'));
+        function filterImageDropdown(compatibleVersions) {
+            // Find all selects that have version metadata.
+            document.querySelectorAll('select[data-has-versions]').forEach(sel => {
+                const versionMap = sel._resolvedVersionMap || {};
+                let foundCompatible = false;
+                Array.from(sel.options).forEach(opt => {
+                    if (!opt.value) return; // skip placeholder
+                    const optVersions = versionMap[opt.value];
+                    const isCompatible = !compatibleVersions || !optVersions || optVersions.some(v => compatibleVersions.includes(v));
+                    opt.disabled = !isCompatible;
+                    opt.style.color = isCompatible ? '' : 'var(--md-sys-color-on-surface-variant)';
+                    opt.style.opacity = isCompatible ? '' : '0.5';
+                    if (opt.value === sel.value && isCompatible) foundCompatible = true;
+                });
+                // Auto-select first compatible option if current is no longer valid.
+                if (!foundCompatible) {
+                    const firstCompatible = Array.from(sel.options).find(o => o.value && !o.disabled);
+                    if (firstCompatible) {
+                        sel.value = firstCompatible.value;
+                        sel.dispatchEvent(new Event('change'));
+                    }
                 }
-            }
+            });
         }
 
         // Tracks the resolved default last applied to each parameter field, so a
@@ -2278,17 +2278,19 @@
                         if (resolved === valueToApply) option.selected = true;
                         input.appendChild(option);
                     });
-                    // When a select has options with versions, filter the version dropdown.
+                    // When a select has options with versions, store a
+                    // resolved-value→versions lookup for version-based filtering.
                     const hasVersions = p.options.some(o => o && typeof o === 'object' && o.versions && o.versions.length > 0);
                     if (hasVersions) {
-                        input.addEventListener('change', function() {
-                            const selectedOpt = (p.options || []).find(o => {
-                                const v = (typeof o === 'object' && o !== null) ? o.value : o;
-                                return v === this.value;
-                            });
-                            const compatibleVersions = (selectedOpt && typeof selectedOpt === 'object' && selectedOpt.versions) ? selectedOpt.versions : null;
-                            filterVersionDropdown(compatibleVersions);
+                        input.setAttribute('data-has-versions', 'true');
+                        const resolvedVersionMap = {};
+                        p.options.forEach(opt => {
+                            if (typeof opt === 'object' && opt !== null && opt.versions) {
+                                const rv = resolveParameterValue(opt.value, builtins);
+                                resolvedVersionMap[rv] = opt.versions;
+                            }
                         });
+                        input._resolvedVersionMap = resolvedVersionMap;
                     }
                 } else {
                     input = document.createElement('input');
@@ -2333,27 +2335,11 @@
                 container.appendChild(group);
             });
 
-            // After rendering, apply initial version filtering from any select
-            // that has options with version constraints.
+            // After rendering, apply initial version-based filtering: grey out
+            // image options that don't match the current Kubernetes version.
             const versionSelect = document.getElementById('clusterVersion');
-            if (versionSelect) {
-                const allVersionOpts = Array.from(versionSelect.options).filter(o => o.value);
-                const currentVersion = versionSelect.value;
-                // Find the first select with version metadata and apply its filter.
-                for (const p of clusterParameters) {
-                    if (!p.options || p.options.length === 0) continue;
-                    const hasVersions = p.options.some(o => o && typeof o === 'object' && o.versions && o.versions.length > 0);
-                    if (!hasVersions) continue;
-                    const sel = document.getElementById('param_' + p.key);
-                    if (!sel) continue;
-                    const selectedOpt = (p.options || []).find(o => {
-                        const v = (typeof o === 'object' && o !== null) ? o.value : o;
-                        return v === sel.value;
-                    });
-                    const compatibleVersions = (selectedOpt && typeof selectedOpt === 'object' && selectedOpt.versions) ? selectedOpt.versions : null;
-                    filterVersionDropdown(compatibleVersions);
-                    break; // only the first select with versions controls the filter
-                }
+            if (versionSelect && versionSelect.value) {
+                filterImageDropdown([versionSelect.value]);
             }
         }
 

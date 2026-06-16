@@ -191,7 +191,7 @@ cluster:
           versions: ["v1.35.4"]
         - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
           label: "26.05"
-          versions: ["v1.36.1", "v1.35.4"]
+          versions: ["v1.36.1"]
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"
