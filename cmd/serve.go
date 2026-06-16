@@ -112,6 +112,12 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_cp", maxCP)
 		}
 	}
+	// Validate config early — refuse to start with broken configuration.
+	if err := cluster.ValidateConfig(); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+
 	// Log cluster configuration
 	clusterDomain := viper.GetString("cluster.domain")
 	clusterPort := viper.GetInt("cluster.port")
