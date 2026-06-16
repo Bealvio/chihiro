@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -161,9 +162,42 @@ func trustedRedirectHost(host string) bool {
 	return allowed[host]
 }
 
-// getRedirectURLFromRequest constructs the redirect URL based on the incoming request
+// isLoopbackHost reports whether host is a loopback/localhost name, used to skip
+// a dev-default OIDC redirect URL so it cannot override real proxy detection.
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(host)
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// getRedirectURLFromRequest constructs the redirect URL based on the incoming
+// request. When a configured OIDC redirect URL is present it is used verbatim,
+// which is both the most secure option (it cannot be influenced by request
+// headers) and the simplest for TLS-terminating-proxy deployments. Otherwise
+// the URL is reconstructed from the request, honoring standard proxy headers.
 func getRedirectURLFromRequest(r *http.Request) string {
-	// Default to the request's own Host (set by the server, not the client).
+	// Prefer the explicitly configured redirect URL. In production this is set
+	// to the public HTTPS callback, so we never have to guess scheme/host from
+	// proxy headers (which is where the http/https mismatch came from).
+	//
+	// Ignore the localhost/loopback dev default so a leftover value in a
+	// committed config file does not force an http://localhost callback in a
+	// real deployment — in that case fall through to request-based detection.
+	if ru := viper.GetString("oidc.redirect_url"); ru != "" {
+		if u, err := url.Parse(ru); err == nil && u.Host != "" && !isLoopbackHost(u.Hostname()) {
+			redirectURL := fmt.Sprintf("%s://%s/auth/callback", u.Scheme, u.Host)
+			slog.Debug("Using configured OIDC redirect URL", "redirect_url", redirectURL)
+			return redirectURL
+		}
+	}
+
+	// Fallback: reconstruct from the request. Default to the request's own Host
+	// (set by the server, not the client).
 	host := r.Host
 
 	// Only trust X-Forwarded-Host when it matches a configured allow-list,
@@ -177,16 +211,15 @@ func getRedirectURLFromRequest(r *http.Request) string {
 		}
 	}
 
-	// Determine the scheme
+	// Determine the scheme. X-Forwarded-Proto is the standard signal from a
+	// TLS-terminating proxy (the request reaching us is plain HTTP in that
+	// case), so honor it directly; restrict to http/https.
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	// Honor X-Forwarded-Proto only for the trusted host; restrict to http/https.
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" && trustedRedirectHost(host) {
-		if proto == "http" || proto == "https" {
-			scheme = proto
-		}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto == "http" || proto == "https" {
+		scheme = proto
 	}
 
 	redirectURL := fmt.Sprintf("%s://%s/auth/callback", scheme, host)
