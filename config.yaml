@@ -136,6 +136,7 @@ cluster:
     metadata:
       namespace: mgmt
       labels:
+        sveltos.argus.rpcu.io/openstack-integration: {{ chihiro.openstack }}
         sveltos.argus.rpcu.io/oidc-rbac: {{ chihiro.oidcRbac }}
         sveltos.argus.rpcu.io/cilium: {{ chihiro.cilium }}
         type: workload
@@ -193,6 +194,15 @@ cluster:
           label: "26.05"
           versions: ["v1.36.1"]
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+      # The node image embeds the Kubernetes version and is version-constrained
+      # via the per-option `versions` lists above. recompute_on ties it to the
+      # version field: editing the cluster version re-selects the compatible
+      # image option and re-resolves {{ chihiro.version }} into the final node
+      # image name, written at `path` in the same update. This is a generic
+      # dependency — any parameter may declare recompute_on for other fields.
+      editable: true
+      recompute_on: ["version"]
+      path: "spec.topology.variables[2].value"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"
       description: "CIDR block for the managed subnet"
@@ -221,3 +231,12 @@ cluster:
       false_value: disabled
       editable: true
       path: "metadata.labels.'sveltos.argus.rpcu.io/oidc-rbac'"
+    openstack:
+      label: "Openstack Integration"
+      description: "Enable Service Type LB using Octavia and CSI using Cinder"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/openstack-integration'"

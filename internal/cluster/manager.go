@@ -970,6 +970,10 @@ func (m *Manager) UpdateClusterParameter(ctx context.Context, clusterName, names
 		slog.Warn("Failed to marshal parameters annotation", "cluster", clusterName, "error", err)
 	}
 
+	// Recompute any parameters that depend on this one (recompute_on: [<key>])
+	// and apply them in the same update so dependent fields stay consistent.
+	applyRecomputedDependents(cluster, map[string]string{strings.ToLower(key): storedState})
+
 	if _, err := m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{}); err != nil {
 		slog.Error("Failed to update cluster parameter", "cluster", clusterName, "namespace", namespace, "key", key, "error", err)
 		return fmt.Errorf("failed to update cluster: %v", err)
@@ -1097,6 +1101,11 @@ func (m *Manager) UpdateClusterVersion(ctx context.Context, clusterName, namespa
 			topology["version"] = version
 		}
 	}
+
+	// Recompute any parameters that depend on the version (recompute_on:
+	// [version]) and write them in the same update so dependent fields such as
+	// the node image name stay consistent with the new version.
+	applyRecomputedDependents(cluster, map[string]string{"version": version})
 
 	_, err = m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{})
 	if err != nil {
@@ -1256,18 +1265,21 @@ func setYAMLPath(obj map[string]interface{}, path string, value interface{}) {
 
 			if isLast {
 				arr[index] = value
-			} else {
-				if child, ok := arr[index].(map[string]interface{}); ok {
-					current = child
-				} else {
-					child = make(map[string]interface{})
-					arr[index] = child
-					current = child
-				}
-				continue
+				current[idx] = arr
+				return
 			}
+			// Persist the (possibly newly created or extended) array back into
+			// its parent map before descending; otherwise non-terminal array
+			// indices like "variables[0].value" would be discarded.
 			current[idx] = arr
-			return
+			if child, ok := arr[index].(map[string]interface{}); ok {
+				current = child
+			} else {
+				child = make(map[string]interface{})
+				arr[index] = child
+				current = child
+			}
+			continue
 		}
 
 		if isLast {

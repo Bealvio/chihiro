@@ -1114,8 +1114,17 @@
                     }
                 }
             });
+            // Only show parameters that are declared in config
+            // (clusterParameters). Entries present on the cluster but not in the
+            // current config — e.g. addon labels/params like openstack-ccm or
+            // openstack-cinder-csi that are not part of cluster.parameters — are
+            // ignored and never displayed.
+            const declaredKeys = new Set((clusterParameters || [])
+                .filter(p => p.key)
+                .map(p => p.key.toLowerCase()));
             const keys = Object.keys(params)
                 .filter(key => !MORE_DETAILS_EXCLUDE.has(key.toLowerCase()))
+                .filter(key => declaredKeys.has(key.toLowerCase()))
                 .sort();
             if (keys.length === 0) return '';
 
@@ -1861,8 +1870,23 @@
             const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
             const editMeta = editableFields[key.toLowerCase()] || {};
             const type = (meta && meta.type) || editMeta.type || 'string';
-            const current = (cluster && cluster.parameters && cluster.parameters[key] !== undefined)
-                ? cluster.parameters[key] : (meta ? meta.default : '');
+            // Resolve the current value. The chihiro.io/parameters annotation is
+            // the source of truth, but boolean toggles whose value lives in a
+            // cluster label (e.g. the Sveltos addon labels for declared params)
+            // are not recorded there until first edited. Fall back to reading
+            // the live label value via the param's path so the control reflects
+            // the cluster's actual state instead of the static default.
+            let current;
+            const annotationKey = (cluster && cluster.parameters)
+                ? Object.keys(cluster.parameters).find(k => k.toLowerCase() === key.toLowerCase())
+                : undefined;
+            if (annotationKey !== undefined) {
+                current = cluster.parameters[annotationKey];
+            } else {
+                const labelVal = (meta && meta.path && cluster)
+                    ? extractLabelValue(meta.path, cluster.labels) : undefined;
+                current = (labelVal !== undefined) ? String(labelVal) : (meta ? meta.default : '');
+            }
 
             editParameterData = { name, namespace, key, type };
 
@@ -1893,9 +1917,13 @@
                 const sel = document.createElement('select');
                 sel.id = 'editParameterInput';
                 meta.options.forEach(opt => {
+                    // Options may be plain strings or {value,label,versions}
+                    // objects (version-constrained selects like the node image).
+                    const value = (opt && typeof opt === 'object') ? opt.value : opt;
+                    const label = (opt && typeof opt === 'object') ? (opt.label || opt.value) : opt;
                     const o = document.createElement('option');
-                    o.value = opt; o.textContent = opt;
-                    if (opt === current) o.selected = true;
+                    o.value = value; o.textContent = label;
+                    if (value === current) o.selected = true;
                     sel.appendChild(o);
                 });
                 field.appendChild(sel);

@@ -37,6 +37,12 @@ type TemplateParameter struct {
 	// Path is the YAML path the value is written to on edit. Required for a
 	// parameter to be editable after creation.
 	Path string `json:"path,omitempty"`
+	// RecomputeOn lists the names of other editable fields (built-in or
+	// parameter, case-insensitive) whose change should trigger this parameter
+	// to be re-resolved and written together in the same update. Generic: any
+	// parameter can depend on any other field. Requires Path to be set so the
+	// recomputed value can be written to the live object.
+	RecomputeOn []string `json:"recomputeOn,omitempty"`
 }
 
 type parameterConfig struct {
@@ -52,6 +58,7 @@ type parameterConfig struct {
 	TrueValue   string      `mapstructure:"true_value"`
 	FalseValue  string      `mapstructure:"false_value"`
 	Path        string      `mapstructure:"path"`
+	RecomputeOn []string    `mapstructure:"recompute_on"`
 }
 
 func DiscoverParameters(templateStr string) []TemplateParameter {
@@ -113,6 +120,7 @@ func DiscoverParameters(templateStr string) []TemplateParameter {
 			p.Min = cfg.Min
 			p.Max = cfg.Max
 			p.Path = cfg.Path
+			p.RecomputeOn = cfg.RecomputeOn
 			if p.Type == "boolean" {
 				p.TrueValue, p.FalseValue = boolValueStrings(cfg)
 				// For booleans the default is the on/off state ("true"/"false"),
@@ -208,6 +216,7 @@ func loadParameterConfig() map[string]parameterConfig {
 			TrueValue:   getScalarString(fields, "true_value"),
 			FalseValue:  getScalarString(fields, "false_value"),
 			Path:        getString(fields, "path"),
+			RecomputeOn: getStringSlice(fields, "recompute_on"),
 		}
 		result[key] = cfg
 	}

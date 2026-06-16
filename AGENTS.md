@@ -77,8 +77,12 @@ Things that are correct and must not regress:
 - Security headers (CSP, X-Frame-Options DENY, nosniff) applied globally.
 - Request body capped at 1MB; auth/API endpoints rate-limited per IP.
 - WebSocket `CheckOrigin` rejects empty/unknown origins.
-- Generated kubeconfigs intentionally omit the OIDC client secret and CA data
-  is left to the exec plugin — do not add secrets back into kubeconfig output.
+- Generated kubeconfigs intentionally omit the OIDC client secret — do not add
+  it back into kubeconfig output. The cluster CA certificate (a public cert, not
+  a secret) IS embedded as certificate-authority-data when it can be retrieved
+  from the CAPI `<cluster>-ca` (tls.crt/ca.crt) or `<cluster>-kubeconfig`
+  secrets; retrieval failures fall back to omitting it (verification then left
+  to the exec plugin / host trust store). Keep this multi-source fallback.
 - Cluster names validated against a strict regex before creation.
 - Per-IP rate limiter entries are evicted when idle: `Cleanup(maxAge)` removes
   stale entries and `StartCleanup` runs it periodically (wired in

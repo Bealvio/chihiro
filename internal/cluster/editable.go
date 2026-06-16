@@ -19,12 +19,15 @@ type EditableField struct {
 	// injection fields). Type is e.g. "string"/"number"/"select"/"boolean";
 	// Path is where the value is written; TrueValue/FalseValue apply to
 	// booleans; Options applies to selects.
-	Type       string   `json:"type,omitempty"`
-	Path       string   `json:"path,omitempty"`
+	Type       string       `json:"type,omitempty"`
+	Path       string       `json:"path,omitempty"`
 	Options    []OptionItem `json:"options,omitempty"`
-	TrueValue  string   `json:"trueValue,omitempty"`
-	FalseValue string   `json:"falseValue,omitempty"`
-	Label      string   `json:"label,omitempty"`
+	TrueValue  string       `json:"trueValue,omitempty"`
+	FalseValue string       `json:"falseValue,omitempty"`
+	Label      string       `json:"label,omitempty"`
+	// RecomputeOn lists fields whose edit should also recompute this one. Empty
+	// for built-in injection fields.
+	RecomputeOn []string `json:"recomputeOn,omitempty"`
 }
 
 // injectionConfig is a single cluster.injections entry. path is the YAML path
@@ -125,14 +128,15 @@ func GetEditableFields(templateStr string) []EditableField {
 			ptype = "string"
 		}
 		ef := EditableField{
-			Key:     outKey,
-			Enabled: true,
-			Min:     cfg.Min,
-			Max:     cfg.Max,
-			Type:    ptype,
-			Path:    cfg.Path,
-			Options: normalizeOptions(cfg.Options),
-			Label:   cfg.Label,
+			Key:         outKey,
+			Enabled:     true,
+			Min:         cfg.Min,
+			Max:         cfg.Max,
+			Type:        ptype,
+			Path:        cfg.Path,
+			Options:     normalizeOptions(cfg.Options),
+			Label:       cfg.Label,
+			RecomputeOn: cfg.RecomputeOn,
 		}
 		if ptype == "boolean" {
 			ef.TrueValue, ef.FalseValue = boolValueStrings(cfg)
