@@ -826,6 +826,7 @@
                         Only newer versions are available for upgrade
                     </small>
                 </div>
+                <div id="editVersionDependents" style="display: none; margin-bottom: 16px;"></div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-text" onclick="closeEditVersionModal()">Cancel</button>
                     <button type="submit" class="btn btn-filled">Upgrade Version</button>
@@ -1848,11 +1849,14 @@
 
         function openEditVersionModal(name, namespace, currentVersion) {
             console.log('Opening edit version modal for cluster:', name, 'current version:', currentVersion);
-            editVersionData = { name, namespace, currentVersion };
+            const cluster = currentClustersList.find(c => c.name === name && c.namespace === namespace);
+            editVersionData = { name, namespace, currentVersion, cluster };
             document.getElementById('editVersionClusterName').textContent = name;
 
             // Populate dropdown with upgrade-only versions
             populateUpgradeVersions(currentVersion);
+            // Clear any previous dependent-parameter preview.
+            renderVersionDependents('');
 
             document.getElementById('editVersionModalOverlay').style.display = 'flex';
         }
@@ -1860,6 +1864,98 @@
         function closeEditVersionModal() {
             document.getElementById('editVersionModalOverlay').style.display = 'none';
             editVersionData = null;
+        }
+
+        // resolveChihiroTokens replaces chihiro token references in a value
+        // using the supplied token table (case-insensitive). Unknown tokens are
+        // left untouched. Mirrors the server-side resolver.
+        function resolveChihiroTokens(value, tokens) {
+            if (!value) return value;
+            return value.replace(/\{\{\s*chihiro\.(\w+)\s*\}\}/g, function(match, key) {
+                const v = tokens[key.toLowerCase()];
+                return (v !== undefined && v !== '') ? v : match;
+            });
+        }
+
+        // versionDependentParams returns the declared parameters that depend on
+        // the cluster version (recompute_on includes "version"). These are the
+        // parameters that will be recomputed server-side when the version
+        // changes (e.g. the node image).
+        function versionDependentParams() {
+            return (clusterParameters || []).filter(p =>
+                Array.isArray(p.recomputeOn) &&
+                p.recomputeOn.some(d => String(d).toLowerCase() === 'version'));
+        }
+
+        // computeDependentValueForVersion mirrors the server's recompute logic
+        // for a single parameter and target version: pick the option compatible
+        // with the new version (honoring each option's versions list), keeping
+        // the current option when it stays compatible, then resolve the embedded
+        // chihiro version token. Returns the final resolved value.
+        function computeDependentValueForVersion(p, newVersion, cluster) {
+            const tokens = { version: newVersion };
+            // Current raw state from the cluster's stored parameters (if any).
+            let current;
+            if (cluster && cluster.parameters) {
+                const k = Object.keys(cluster.parameters).find(
+                    x => x.toLowerCase() === p.key.toLowerCase());
+                if (k !== undefined) current = cluster.parameters[k];
+            }
+
+            const opts = (p.type === 'select' && Array.isArray(p.options)) ? p.options : [];
+            const compatible = (o) => !o.versions || o.versions.length === 0 ||
+                o.versions.some(v => String(v).toLowerCase() === String(newVersion).toLowerCase());
+
+            let candidate;
+            if (opts.length > 0) {
+                // Keep current option if still compatible.
+                if (current) {
+                    const match = opts.find(o =>
+                        (o.value === current ||
+                         resolveChihiroTokens(o.value, tokens) === resolveChihiroTokens(current, tokens))
+                        && compatible(o));
+                    if (match) candidate = match.value;
+                }
+                // Otherwise first compatible option.
+                if (candidate === undefined) {
+                    const firstCompat = opts.find(compatible);
+                    if (firstCompat) candidate = firstCompat.value;
+                }
+                if (candidate === undefined) candidate = current || p.default;
+            } else {
+                candidate = current || p.default;
+            }
+
+            return resolveChihiroTokens(candidate, tokens);
+        }
+
+        // renderVersionDependents shows, for the selected target version, what
+        // each version-dependent parameter (e.g. the node image) will be changed
+        // to. Pass an empty version to hide the preview.
+        function renderVersionDependents(newVersion) {
+            const container = document.getElementById('editVersionDependents');
+            const deps = versionDependentParams();
+            if (!newVersion || deps.length === 0) {
+                container.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            const cluster = editVersionData && editVersionData.cluster;
+            const rows = deps.map(p => {
+                const resolved = computeDependentValueForVersion(p, newVersion, cluster);
+                return `
+                    <div class="detail-item">
+                        <div class="detail-label">${escapeHtml(p.label || parameterLabel(p.key))}</div>
+                        <div class="detail-value">${escapeHtml(resolved || '')}</div>
+                    </div>`;
+            }).join('');
+            container.innerHTML = `
+                <div class="detail-label" style="margin-bottom: 8px;">Will also be updated</div>
+                ${rows}
+                <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-top: 4px;">
+                    These values are recomputed automatically to stay compatible with the selected version.
+                </small>`;
+            container.style.display = 'block';
         }
 
         // Generic editable-parameter modal.
@@ -1964,6 +2060,10 @@
                     select.appendChild(option);
                 });
             }
+
+            // Refresh the dependent-parameter preview (e.g. node image) whenever
+            // the selected target version changes.
+            select.onchange = function() { renderVersionDependents(select.value); };
         }
 
         function compareVersions(version1, version2) {
