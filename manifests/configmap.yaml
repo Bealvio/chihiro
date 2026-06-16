@@ -18,7 +18,8 @@ data:
       domain: 'cluster.local'  # REPLACE with your cluster domain
       port: 443
       available_versions:
-        - 'v1.34.0'  # REPLACE with your available Kubernetes versions
+        - 'v1.36.1'  # REPLACE with your available Kubernetes versions
+        - 'v1.35.4'
       admin_groups:
         - kube-admin  # REPLACE with your admin groups (full access to all clusters)
       creator_groups:
@@ -90,3 +91,15 @@ data:
           description: "CIDR block for the managed subnet"
           type: string
           default: "192.168.1.0/24"
+        imageName:
+          label: "Node Image"
+          description: "OpenStack image for cluster nodes"
+          type: select
+          options:
+            - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
+              label: "25.11"
+              versions: ["v1.35.4"]
+            - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+              label: "26.05"
+              versions: ["v1.36.1", "v1.35.4"]
+          default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
