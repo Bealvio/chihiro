@@ -2386,8 +2386,12 @@
                 if (p.type === 'boolean') {
                     // Always send the explicit on/off state for booleans.
                     parameters[p.key] = (el ? el.checked : (p.default === 'true')) ? 'true' : 'false';
+                } else if (el && el.tagName === 'SELECT' && el.value) {
+                    // Selects always send the user's chosen value.
+                    parameters[p.key] = el.value;
                 } else if (p.default && /\{\{\s*chihiro\.\w+\s*\}\}/.test(p.default)) {
-                    // Auto-resolved params always send the resolved value.
+                    // Auto-resolved params send the resolved value when no
+                    // explicit selection was made (e.g. text inputs).
                     parameters[p.key] = resolveParameterValue(p.default, builtins);
                 } else if (el && el.value) {
                     parameters[p.key] = el.value;
