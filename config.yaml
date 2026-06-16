@@ -25,6 +25,7 @@ cluster:
   port: 443
   available_versions:
     - "v1.36.1"
+    - "v1.35.4"
   admin_groups:
     - kube-admin
   creator_groups:
@@ -185,8 +186,12 @@ cluster:
       description: "OpenStack image for cluster nodes"
       type: select
       options:
-        - "hephaestus-kaas-25.11-{{ chihiro.version }}"
-        - "hephaestus-kaas-26.05-{{ chihiro.version }}"
+        - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
+          label: "25.11"
+          versions: ["v1.35.4"]
+        - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+          label: "26.05"
+          versions: ["v1.36.1", "v1.35.4"]
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"

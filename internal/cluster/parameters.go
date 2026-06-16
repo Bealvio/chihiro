@@ -10,17 +10,26 @@ import (
 
 var chihiroParamRegex = regexp.MustCompile(`\{\{\s*chihiro\.(\w+)\s*\}\}`)
 
+// OptionItem describes one choice in a select parameter. Options may be plain
+// strings (backward-compatible) or structured objects with a display label and
+// an optional list of compatible Kubernetes versions.
+type OptionItem struct {
+	Value    string   `json:"value"`
+	Label    string   `json:"label,omitempty"`
+	Versions []string `json:"versions,omitempty"`
+}
+
 type TemplateParameter struct {
-	Key         string   `json:"key"`
-	Label       string   `json:"label"`
-	Description string   `json:"description"`
-	Default     string   `json:"default"`
-	Type        string   `json:"type"`
-	Options     []string `json:"options,omitempty"`
-	Required    bool     `json:"required"`
-	Editable    bool     `json:"editable"`
-	Min         *int     `json:"min,omitempty"`
-	Max         *int     `json:"max,omitempty"`
+	Key         string       `json:"key"`
+	Label       string       `json:"label"`
+	Description string       `json:"description"`
+	Default     string       `json:"default"`
+	Type        string       `json:"type"`
+	Options     []OptionItem `json:"options,omitempty"`
+	Required    bool         `json:"required"`
+	Editable    bool         `json:"editable"`
+	Min         *int         `json:"min,omitempty"`
+	Max         *int         `json:"max,omitempty"`
 	// TrueValue/FalseValue are the strings substituted into the template for a
 	// boolean parameter when it is on/off (default "true"/"false").
 	TrueValue  string `json:"trueValue,omitempty"`
@@ -31,18 +40,18 @@ type TemplateParameter struct {
 }
 
 type parameterConfig struct {
-	Label       string   `mapstructure:"label"`
-	Description string   `mapstructure:"description"`
-	Default     string   `mapstructure:"default"`
-	Type        string   `mapstructure:"type"`
-	Options     []string `mapstructure:"options"`
-	Required    bool     `mapstructure:"required"`
-	Editable    bool     `mapstructure:"editable"`
-	Min         *int     `mapstructure:"min"`
-	Max         *int     `mapstructure:"max"`
-	TrueValue   string   `mapstructure:"true_value"`
-	FalseValue  string   `mapstructure:"false_value"`
-	Path        string   `mapstructure:"path"`
+	Label       string      `mapstructure:"label"`
+	Description string      `mapstructure:"description"`
+	Default     string      `mapstructure:"default"`
+	Type        string      `mapstructure:"type"`
+	Options     interface{} `mapstructure:"options"`
+	Required    bool        `mapstructure:"required"`
+	Editable    bool        `mapstructure:"editable"`
+	Min         *int        `mapstructure:"min"`
+	Max         *int        `mapstructure:"max"`
+	TrueValue   string      `mapstructure:"true_value"`
+	FalseValue  string      `mapstructure:"false_value"`
+	Path        string      `mapstructure:"path"`
 }
 
 func DiscoverParameters(templateStr string) []TemplateParameter {
@@ -98,7 +107,7 @@ func DiscoverParameters(templateStr string) []TemplateParameter {
 			if cfg.Type != "" {
 				p.Type = cfg.Type
 			}
-			p.Options = cfg.Options
+			p.Options = normalizeOptions(cfg.Options)
 			p.Required = cfg.Required
 			p.Editable = cfg.Editable
 			p.Min = cfg.Min
@@ -192,7 +201,7 @@ func loadParameterConfig() map[string]parameterConfig {
 			Default:     getScalarString(fields, "default"),
 			Type:        getString(fields, "type"),
 			Required:    getBool(fields, "required"),
-			Options:     getStringSlice(fields, "options"),
+			Options:     fields["options"],
 			Editable:    getBool(fields, "editable"),
 			Min:         getIntPtr(fields, "min"),
 			Max:         getIntPtr(fields, "max"),
@@ -346,6 +355,44 @@ func firstAvailableVersion() string {
 		return versions[0]
 	}
 	return ""
+}
+
+// normalizeOptions converts the raw options value from config (either a string
+// slice or a slice of {value, label, versions} objects) into []OptionItem.
+func normalizeOptions(raw interface{}) []OptionItem {
+	arr, ok := raw.([]interface{})
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]OptionItem, 0, len(arr))
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			out = append(out, OptionItem{Value: v, Label: v})
+		case map[string]interface{}:
+			oi := OptionItem{
+				Value: getString(v, "value"),
+				Label: getString(v, "label"),
+			}
+			// versions is an optional string slice.
+			if rawVersions, ok := v["versions"]; ok {
+				if arr2, ok := rawVersions.([]interface{}); ok {
+					for _, rv := range arr2 {
+						if s, ok := rv.(string); ok {
+							oi.Versions = append(oi.Versions, s)
+						}
+					}
+				}
+			}
+			if oi.Value != "" {
+				if oi.Label == "" {
+					oi.Label = oi.Value
+				}
+				out = append(out, oi)
+			}
+		}
+	}
+	return out
 }
 
 func humanizeKey(key string) string {

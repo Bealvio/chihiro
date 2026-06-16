@@ -21,7 +21,7 @@ type EditableField struct {
 	// booleans; Options applies to selects.
 	Type       string   `json:"type,omitempty"`
 	Path       string   `json:"path,omitempty"`
-	Options    []string `json:"options,omitempty"`
+	Options    []OptionItem `json:"options,omitempty"`
 	TrueValue  string   `json:"trueValue,omitempty"`
 	FalseValue string   `json:"falseValue,omitempty"`
 	Label      string   `json:"label,omitempty"`
@@ -131,7 +131,7 @@ func GetEditableFields(templateStr string) []EditableField {
 			Max:     cfg.Max,
 			Type:    ptype,
 			Path:    cfg.Path,
-			Options: cfg.Options,
+			Options: normalizeOptions(cfg.Options),
 			Label:   cfg.Label,
 		}
 		if ptype == "boolean" {

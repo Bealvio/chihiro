@@ -2152,6 +2152,35 @@
             });
         }
 
+        // filterVersionDropdown restricts the #clusterVersion dropdown to only
+        // options whose value is in the compatibleVersions list. Pass null to
+        // show all versions. Auto-selects the first compatible version if the
+        // current selection is no longer compatible.
+        function filterVersionDropdown(compatibleVersions) {
+            const versionSelect = document.getElementById('clusterVersion');
+            if (!versionSelect) return;
+            const allOptions = Array.from(versionSelect.options);
+            let currentVal = versionSelect.value;
+            let foundCompatible = false;
+
+            allOptions.forEach(opt => {
+                if (!opt.value) return; // skip placeholder
+                const isCompatible = !compatibleVersions || compatibleVersions.includes(opt.value);
+                opt.hidden = !isCompatible;
+                opt.disabled = !isCompatible;
+                if (opt.value === currentVal && isCompatible) foundCompatible = true;
+            });
+
+            // Auto-select first compatible version if current is no longer valid.
+            if (!foundCompatible) {
+                const firstCompatible = allOptions.find(o => o.value && !o.hidden);
+                if (firstCompatible) {
+                    versionSelect.value = firstCompatible.value;
+                    versionSelect.dispatchEvent(new Event('change'));
+                }
+            }
+        }
+
         // Tracks the resolved default last applied to each parameter field, so a
         // re-render (e.g. after the version changes) can tell whether the field
         // still holds its default — and may be refreshed — or was edited by the
@@ -2236,14 +2265,31 @@
                         emptyOpt.textContent = 'Select...';
                         input.appendChild(emptyOpt);
                     }
+                    // Store full option metadata for version filtering.
+                    input._optionMeta = p.options || [];
                     p.options.forEach(opt => {
-                        const resolved = isAutoResolved ? resolveParameterValue(opt, builtins) : opt;
+                        const optValue = (typeof opt === 'object' && opt !== null) ? opt.value : opt;
+                        const optLabel = (typeof opt === 'object' && opt !== null) ? (opt.label || opt.value) : opt;
+                        const resolved = isAutoResolved ? resolveParameterValue(optValue, builtins) : optValue;
+                        const resolvedLabel = isAutoResolved ? resolveParameterValue(optLabel, builtins) : optLabel;
                         const option = document.createElement('option');
                         option.value = resolved;
-                        option.textContent = resolved;
+                        option.textContent = resolvedLabel;
                         if (resolved === valueToApply) option.selected = true;
                         input.appendChild(option);
                     });
+                    // When a select has options with versions, filter the version dropdown.
+                    const hasVersions = p.options.some(o => o && typeof o === 'object' && o.versions && o.versions.length > 0);
+                    if (hasVersions) {
+                        input.addEventListener('change', function() {
+                            const selectedOpt = (p.options || []).find(o => {
+                                const v = (typeof o === 'object' && o !== null) ? o.value : o;
+                                return v === this.value;
+                            });
+                            const compatibleVersions = (selectedOpt && typeof selectedOpt === 'object' && selectedOpt.versions) ? selectedOpt.versions : null;
+                            filterVersionDropdown(compatibleVersions);
+                        });
+                    }
                 } else {
                     input = document.createElement('input');
                     input.type = p.type === 'number' ? 'number' : 'text';
@@ -2286,6 +2332,29 @@
 
                 container.appendChild(group);
             });
+
+            // After rendering, apply initial version filtering from any select
+            // that has options with version constraints.
+            const versionSelect = document.getElementById('clusterVersion');
+            if (versionSelect) {
+                const allVersionOpts = Array.from(versionSelect.options).filter(o => o.value);
+                const currentVersion = versionSelect.value;
+                // Find the first select with version metadata and apply its filter.
+                for (const p of clusterParameters) {
+                    if (!p.options || p.options.length === 0) continue;
+                    const hasVersions = p.options.some(o => o && typeof o === 'object' && o.versions && o.versions.length > 0);
+                    if (!hasVersions) continue;
+                    const sel = document.getElementById('param_' + p.key);
+                    if (!sel) continue;
+                    const selectedOpt = (p.options || []).find(o => {
+                        const v = (typeof o === 'object' && o !== null) ? o.value : o;
+                        return v === sel.value;
+                    });
+                    const compatibleVersions = (selectedOpt && typeof selectedOpt === 'object' && selectedOpt.versions) ? selectedOpt.versions : null;
+                    filterVersionDropdown(compatibleVersions);
+                    break; // only the first select with versions controls the filter
+                }
+            }
         }
 
         // Form submissions
