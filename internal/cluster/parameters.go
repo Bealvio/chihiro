@@ -20,11 +20,9 @@ type OptionItem struct {
 }
 
 // ImpliedField declares that editing a parameter should also set another field
-// based on the selected option's metadata. This is the reverse of RecomputeOn:
-// where RecomputeOn pulls a value in when a dependency changes, Implies pushes a
-// value out to a dependency. Field is the target field name (built-in like
-// "version" or another parameter). Source selects what to derive:
-//   - "option_version": the first entry of the selected option's versions list.
+// based on the selected option's metadata. This is now auto-detected from
+// version-constrained option lists rather than requiring explicit config.
+// Deprecated: kept for backward compatibility with existing configs.
 type ImpliedField struct {
 	Field  string `json:"field"`
 	Source string `json:"source,omitempty"`

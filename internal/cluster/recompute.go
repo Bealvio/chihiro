@@ -66,10 +66,20 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 
 	var out []recomputedParameter
 	for key, cfg := range loadParameterConfig() {
-		if len(cfg.RecomputeOn) == 0 || cfg.Path == "" {
+		if cfg.Path == "" {
 			continue
 		}
-		if !dependsOnAny(cfg.RecomputeOn, changedLower) {
+		// A parameter is recomputed when:
+		//   1. It declares recompute_on listing a changed field, OR
+		//   2. It is a select with version-constrained options and the
+		//      version field changed (auto-detected dependency).
+		matched := len(cfg.RecomputeOn) > 0 && dependsOnAny(cfg.RecomputeOn, changedLower)
+		if !matched && cfg.Type == "select" && hasVersionConstrainedOptions(cfg) {
+			if _, ok := changedLower["version"]; ok {
+				matched = true
+			}
+		}
+		if !matched {
 			continue
 		}
 
@@ -99,35 +109,33 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 
 // impliedFieldValues returns the field values implied by editing the parameter
 // identified by key to rawState. This is the reverse direction of recompute:
-// for a select parameter with `implies` mappings, the selected option's
-// metadata (e.g. its versions list) determines the value of another field such
-// as the cluster version. Returns a map of lowercased field name -> value.
+// for a select parameter with version-constrained options, the selected
+// option's versions list determines the value of another field (e.g. the cluster
+// version). No explicit "implies" config is needed — the relationship is
+// inferred from the option metadata. Returns a map of lowercased field name ->
+// value.
 func impliedFieldValues(key, rawState string) map[string]string {
 	cfg, ok := loadParameterConfig()[strings.ToLower(key)]
 	if !ok {
-		// loadParameterConfig keys preserve original config casing; retry exact.
 		cfg, ok = loadParameterConfig()[key]
 	}
-	if !ok || len(normalizeImplies(cfg.Implies)) == 0 {
+	if !ok || cfg.Type != "select" {
 		return nil
 	}
 
 	opts := normalizeOptions(cfg.Options)
-	selected := selectedOption(opts, rawState)
-
-	out := map[string]string{}
-	for _, imp := range normalizeImplies(cfg.Implies) {
-		switch imp.Source {
-		case "option_version":
-			if selected != nil && len(selected.Versions) > 0 {
-				out[strings.ToLower(imp.Field)] = selected.Versions[0]
-			}
-		}
-	}
-	if len(out) == 0 {
+	if !hasVersionConstrainedOptions(cfg) {
 		return nil
 	}
-	return out
+
+	selected := selectedOption(opts, rawState)
+	if selected == nil || len(selected.Versions) == 0 {
+		return nil
+	}
+
+	// The first compatible version in the selected option's list is the
+	// implied version value.
+	return map[string]string{"version": selected.Versions[0]}
 }
 
 // selectedOption returns the option matching rawState, comparing both the raw
@@ -248,6 +256,18 @@ func applyRecomputedDependents(cluster *unstructured.Unstructured, changed map[s
 func dependsOnAny(deps []string, changedLower map[string]string) bool {
 	for _, d := range deps {
 		if _, ok := changedLower[strings.ToLower(strings.TrimSpace(d))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hasVersionConstrainedOptions reports whether a parameter config is a select
+// whose options declare version constraints (non-empty versions lists). This
+// is used to auto-detect the version dependency without explicit config.
+func hasVersionConstrainedOptions(cfg parameterConfig) bool {
+	for _, opt := range normalizeOptions(cfg.Options) {
+		if len(opt.Versions) > 0 {
 			return true
 		}
 	}

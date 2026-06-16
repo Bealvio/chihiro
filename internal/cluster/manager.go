@@ -1112,9 +1112,10 @@ func (m *Manager) UpdateClusterVersion(ctx context.Context, clusterName, namespa
 		}
 	}
 
-	// Recompute any parameters that depend on the version (recompute_on:
-	// [version]) and write them in the same update so dependent fields such as
-	// the node image name stay consistent with the new version.
+	// Recompute any parameters that depend on the version — either via
+	// recompute_on or auto-detected version-constrained options — and write
+	// them in the same update so dependent fields such as the node image name
+	// stay consistent with the new version.
 	applyRecomputedDependents(cluster, map[string]string{"version": version})
 
 	_, err = m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{})

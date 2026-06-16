@@ -9,8 +9,8 @@ import (
 )
 
 // imageParamConfig mirrors the config.yaml node-image parameter: a select whose
-// option values embed {{ chihiro.version }} and are version-constrained, with a
-// recompute dependency on the version field.
+// option values embed {{ chihiro.version }} and are version-constrained. The
+// version dependency is auto-detected from the option metadata.
 func imageParamConfig() map[string]interface{} {
 	return map[string]interface{}{
 		"imageName": map[string]interface{}{
@@ -27,10 +27,9 @@ func imageParamConfig() map[string]interface{} {
 					"versions": []interface{}{"v1.36.1"},
 				},
 			},
-			"default":      "hephaestus-kaas-26.05-{{ chihiro.version }}",
-			"editable":     true,
-			"recompute_on": []interface{}{"version"},
-			"path":         "spec.topology.variables[0].value",
+			"default":  "hephaestus-kaas-26.05-{{ chihiro.version }}",
+			"editable": true,
+			"path":     "spec.topology.variables[0].value",
 		},
 	}
 }
@@ -68,6 +67,8 @@ func TestRecomputeDependents_KeepsCompatibleOptionReResolves(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
 	// Single option compatible with all versions (no versions list).
+	// Explicit recompute_on is needed since the dependency can't be inferred
+	// from option metadata (no version constraints).
 	viper.Set("cluster.parameters", map[string]interface{}{
 		"imageName": map[string]interface{}{
 			"type": "select",
@@ -109,9 +110,13 @@ func TestRecomputeDependents_SkipsWhenNoPath(t *testing.T) {
 	defer viper.Reset()
 	viper.Set("cluster.parameters", map[string]interface{}{
 		"imageName": map[string]interface{}{
-			"type":         "string",
-			"default":      "img-{{ chihiro.version }}",
-			"recompute_on": []interface{}{"version"},
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value":    "img-{{ chihiro.version }}",
+					"versions": []interface{}{"v1.36.1"},
+				},
+			},
 			// no path -> cannot be written, must be skipped.
 		},
 	})
@@ -162,43 +167,10 @@ func TestApplyRecomputedDependents_WritesPathAndAnnotation(t *testing.T) {
 	}
 }
 
-// imageParamConfigWithImplies mirrors imageParamConfig but adds an `implies`
-// mapping: selecting a node image option pushes the option's first compatible
-// version into spec.topology.version.
-func imageParamConfigWithImplies() map[string]interface{} {
-	return map[string]interface{}{
-		"imageName": map[string]interface{}{
-			"type": "select",
-			"options": []interface{}{
-				map[string]interface{}{
-					"value":    "hephaestus-kaas-25.11-{{ chihiro.version }}",
-					"label":    "25.11",
-					"versions": []interface{}{"v1.35.4"},
-				},
-				map[string]interface{}{
-					"value":    "hephaestus-kaas-26.05-{{ chihiro.version }}",
-					"label":    "26.05",
-					"versions": []interface{}{"v1.36.1"},
-				},
-			},
-			"default":      "hephaestus-kaas-26.05-{{ chihiro.version }}",
-			"editable":     true,
-			"recompute_on": []interface{}{"version"},
-			"implies": []interface{}{
-				map[string]interface{}{
-					"field":  "version",
-					"source": "option_version",
-				},
-			},
-			"path": "spec.topology.variables[0].value",
-		},
-	}
-}
-
 func TestImpliedFieldValues_ReturnsVersionFromOption(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+	viper.Set("cluster.parameters", imageParamConfig())
 
 	// Selecting the 26.05 image should imply version v1.36.1.
 	got := impliedFieldValues("imageName", "hephaestus-kaas-26.05-{{ chihiro.version }}")
@@ -213,7 +185,7 @@ func TestImpliedFieldValues_ReturnsVersionFromOption(t *testing.T) {
 func TestImpliedFieldValues_OlderImageImpliesOlderVersion(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+	viper.Set("cluster.parameters", imageParamConfig())
 
 	got := impliedFieldValues("imageName", "hephaestus-kaas-25.11-{{ chihiro.version }}")
 	if got == nil {
@@ -224,21 +196,33 @@ func TestImpliedFieldValues_OlderImageImpliesOlderVersion(t *testing.T) {
 	}
 }
 
-func TestImpliedFieldValues_NoImpliesReturnsNil(t *testing.T) {
+func TestImpliedFieldValues_NoVersionConstraintsReturnsNil(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	viper.Set("cluster.parameters", imageParamConfig())
+	// Options without versions lists → no auto-detected version dependency.
+	viper.Set("cluster.parameters", map[string]interface{}{
+		"imageName": map[string]interface{}{
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value": "hephaestus-kaas-26.05-{{ chihiro.version }}",
+					"label": "26.05",
+				},
+			},
+			"path": "spec.topology.variables[0].value",
+		},
+	})
 
 	got := impliedFieldValues("imageName", "hephaestus-kaas-26.05-v1.36.1")
 	if got != nil {
-		t.Errorf("expected nil for param without implies, got %+v", got)
+		t.Errorf("expected nil for param without version constraints, got %+v", got)
 	}
 }
 
 func TestImpliedFieldValues_UnknownParamReturnsNil(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+	viper.Set("cluster.parameters", imageParamConfig())
 
 	got := impliedFieldValues("nonexistent", "value")
 	if got != nil {
@@ -249,7 +233,7 @@ func TestImpliedFieldValues_UnknownParamReturnsNil(t *testing.T) {
 func TestApplyImpliedFields_SetsVersionOnCluster(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+	viper.Set("cluster.parameters", imageParamConfig())
 	// Ensure the version injection path is available.
 	viper.Set("cluster.injections", map[string]interface{}{
 		"version": map[string]interface{}{
@@ -281,7 +265,8 @@ func TestApplyImpliedFields_SetsVersionOnCluster(t *testing.T) {
 func TestApplyImpliedFields_ImpliesTriggerRecompute(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	// Set up both the implies and a second parameter that depends on version.
+	// Set up both the auto-detected version dependency and a second parameter
+	// that depends on version via recompute_on.
 	viper.Set("cluster.parameters", map[string]interface{}{
 		"imageName": map[string]interface{}{
 			"type": "select",
@@ -292,21 +277,13 @@ func TestApplyImpliedFields_ImpliesTriggerRecompute(t *testing.T) {
 					"versions": []interface{}{"v1.36.1"},
 				},
 			},
-			"default":      "hephaestus-kaas-26.05-{{ chihiro.version }}",
-			"editable":     true,
-			"recompute_on": []interface{}{"version"},
-			"implies": []interface{}{
-				map[string]interface{}{
-					"field":  "version",
-					"source": "option_version",
-				},
-			},
-			"path": "spec.topology.variables[0].value",
+			"default":  "hephaestus-kaas-26.05-{{ chihiro.version }}",
+			"editable": true,
+			"path":     "spec.topology.variables[0].value",
 		},
 		"imageTag": map[string]interface{}{
-			"type":    "string",
-			"default": "img-{{ chihiro.version }}",
-			// Depends on version, which is implied by imageName.
+			"type":         "string",
+			"default":      "img-{{ chihiro.version }}",
 			"recompute_on": []interface{}{"version"},
 			"path":         "spec.topology.variables[1].value",
 		},

@@ -1889,14 +1889,25 @@
             });
         }
 
-        // versionDependentParams returns the declared parameters that depend on
-        // the cluster version (recompute_on includes "version"). These are the
-        // parameters that will be recomputed server-side when the version
-        // changes (e.g. the node image).
+        // versionDependentParams returns the declared parameters that will be
+        // recomputed when the version changes. This includes parameters with
+        // explicit recompute_on "version" as well as select parameters with
+        // version-constrained options (auto-detected dependency).
         function versionDependentParams() {
-            return (clusterParameters || []).filter(p =>
-                Array.isArray(p.recomputeOn) &&
-                p.recomputeOn.some(d => String(d).toLowerCase() === 'version'));
+            return (clusterParameters || []).filter(p => {
+                // Explicit recompute_on dependency.
+                if (Array.isArray(p.recomputeOn) &&
+                    p.recomputeOn.some(d => String(d).toLowerCase() === 'version')) {
+                    return true;
+                }
+                // Auto-detected: select with version-constrained options.
+                if (p.type === 'select' && Array.isArray(p.options) &&
+                    p.options.some(o => o && typeof o === 'object' &&
+                        Array.isArray(o.versions) && o.versions.length > 0)) {
+                    return true;
+                }
+                return false;
+            });
         }
 
         // computeDependentValueForVersion mirrors the server's recompute logic
@@ -2045,7 +2056,8 @@
             }
 
             document.getElementById('editParameterModalOverlay').style.display = 'flex';
-            if (meta && Array.isArray(meta.implies) && meta.implies.length > 0) {
+            if (meta && meta.type === 'select' && Array.isArray(meta.options) &&
+                meta.options.some(o => o && typeof o === 'object' && Array.isArray(o.versions) && o.versions.length > 0)) {
                 renderParameterImpliedFields();
             }
         }
@@ -2057,9 +2069,8 @@
         }
 
         // renderParameterImpliedFields shows, for the selected parameter value,
-        // what other fields will be changed by the `implies` mappings. This is
-        // the reverse of renderVersionDependents: the user edits a parameter
-        // (e.g. node image) and the version is pushed to stay coherent.
+        // what other fields will be auto-set. For select parameters with
+        // version-constrained options, selecting an option implies a version.
         function renderParameterImpliedFields() {
             const container = document.getElementById('editParameterImplied');
             if (!editParameterData || !editParameterData.key) {
@@ -2068,42 +2079,43 @@
             }
             const meta = (clusterParameters || []).find(
                 p => p.key && p.key.toLowerCase() === editParameterData.key.toLowerCase());
-            if (!meta || !Array.isArray(meta.implies) || meta.implies.length === 0) {
+            if (!meta || meta.type !== 'select' || !Array.isArray(meta.options)) {
+                container.style.display = 'none';
+                return;
+            }
+
+            // Auto-detect: does this parameter have version-constrained options?
+            const hasVersionConstraints = meta.options.some(o =>
+                o && typeof o === 'object' && Array.isArray(o.versions) && o.versions.length > 0);
+            if (!hasVersionConstraints) {
                 container.style.display = 'none';
                 return;
             }
 
             const input = document.getElementById('editParameterInput');
-            const rawValue = (editParameterData.type === 'boolean')
-                ? (input.checked ? 'true' : 'false')
-                : input.value;
+            const rawValue = input.value;
 
-            const rows = meta.implies.map(imp => {
-                let value = '';
-                if (imp.source === 'option_version' && Array.isArray(meta.options)) {
-                    const match = meta.options.find(o => {
-                        const v = (o && typeof o === 'object') ? o.value : o;
-                        return v === rawValue;
-                    });
-                    if (match && match.versions && match.versions.length > 0) {
-                        value = match.versions[0];
-                    }
-                }
-                const label = (editableFields && editableFields[imp.field.toLowerCase()])
-                    ? (editableFields[imp.field.toLowerCase()].label || imp.field)
-                    : parameterLabel(imp.field);
-                return `
-                    <div class="detail-item">
-                        <div class="detail-label">${escapeHtml(label)}</div>
-                        <div class="detail-value">${escapeHtml(value)}</div>
-                    </div>`;
-            }).join('');
+            const match = meta.options.find(o => {
+                const v = (o && typeof o === 'object') ? o.value : o;
+                return v === rawValue;
+            });
+            if (!match || !match.versions || match.versions.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
 
+            const version = match.versions[0];
+            const label = (editableFields && editableFields['version'])
+                ? (editableFields['version'].label || 'version')
+                : parameterLabel('version');
             container.innerHTML = `
                 <div class="detail-label" style="margin-bottom: 8px;">Will also be updated</div>
-                ${rows}
+                <div class="detail-item">
+                    <div class="detail-label">${escapeHtml(label)}</div>
+                    <div class="detail-value">${escapeHtml(version)}</div>
+                </div>
                 <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-top: 4px;">
-                    These values are set automatically to stay consistent with the selected option.
+                    This value is set automatically to stay consistent with the selected option.
                 </small>`;
             container.style.display = 'block';
         }

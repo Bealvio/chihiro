@@ -195,18 +195,10 @@ cluster:
           versions: ["v1.36.1"]
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
       # The node image embeds the Kubernetes version and is version-constrained
-      # via the per-option `versions` lists above. recompute_on ties it to the
-      # version field: editing the cluster version re-selects the compatible
-      # image option and re-resolves {{ chihiro.version }} into the final node
-      # image name, written at `path` in the same update. This is a generic
-      # dependency — any parameter may declare recompute_on for other fields.
-      # implies is the reverse direction: editing the node image pushes the
-      # matching version into spec.topology.version so the two stay coherent.
+      # via the per-option `versions` lists above. The version dependency is
+      # auto-detected from the option metadata — no explicit recompute_on or
+      # implies config is needed.
       editable: true
-      recompute_on: ["version"]
-      implies:
-        - field: "version"
-          source: "option_version"
       path: "spec.topology.variables[2].value"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"
