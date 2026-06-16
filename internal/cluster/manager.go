@@ -970,9 +970,19 @@ func (m *Manager) UpdateClusterParameter(ctx context.Context, clusterName, names
 		slog.Warn("Failed to marshal parameters annotation", "cluster", clusterName, "error", err)
 	}
 
+	// Apply any fields implied by this parameter's selection (e.g. editing a
+	// node-image select may imply the cluster version). The implied values are
+	// merged into the changed set so dependent parameters can also be recompute.
+	implied := applyImpliedFields(cluster, key, storedState)
+
 	// Recompute any parameters that depend on this one (recompute_on: [<key>])
-	// and apply them in the same update so dependent fields stay consistent.
-	applyRecomputedDependents(cluster, map[string]string{strings.ToLower(key): storedState})
+	// or on any implied field, and apply them in the same update so dependent
+	// fields stay consistent.
+	changed := map[string]string{strings.ToLower(key): storedState}
+	for f, v := range implied {
+		changed[f] = v
+	}
+	applyRecomputedDependents(cluster, changed)
 
 	if _, err := m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{}); err != nil {
 		slog.Error("Failed to update cluster parameter", "cluster", clusterName, "namespace", namespace, "key", key, "error", err)

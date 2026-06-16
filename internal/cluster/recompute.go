@@ -97,6 +97,109 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 	return out
 }
 
+// impliedFieldValues returns the field values implied by editing the parameter
+// identified by key to rawState. This is the reverse direction of recompute:
+// for a select parameter with `implies` mappings, the selected option's
+// metadata (e.g. its versions list) determines the value of another field such
+// as the cluster version. Returns a map of lowercased field name -> value.
+func impliedFieldValues(key, rawState string) map[string]string {
+	cfg, ok := loadParameterConfig()[strings.ToLower(key)]
+	if !ok {
+		// loadParameterConfig keys preserve original config casing; retry exact.
+		cfg, ok = loadParameterConfig()[key]
+	}
+	if !ok || len(normalizeImplies(cfg.Implies)) == 0 {
+		return nil
+	}
+
+	opts := normalizeOptions(cfg.Options)
+	selected := selectedOption(opts, rawState)
+
+	out := map[string]string{}
+	for _, imp := range normalizeImplies(cfg.Implies) {
+		switch imp.Source {
+		case "option_version":
+			if selected != nil && len(selected.Versions) > 0 {
+				out[strings.ToLower(imp.Field)] = selected.Versions[0]
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// selectedOption returns the option matching rawState, comparing both the raw
+// (templated) option value and a token-stripped form so a stored value like
+// "hephaestus-kaas-26.05-v1.36.1" still matches the option
+// "hephaestus-kaas-26.05-{{ chihiro.version }}".
+func selectedOption(opts []OptionItem, rawState string) *OptionItem {
+	for i := range opts {
+		if opts[i].Value == rawState {
+			return &opts[i]
+		}
+	}
+	// Compare with the chihiro token reduced to a wildcard match: replace the
+	// token in each option value with the version captured from rawState.
+	for i := range opts {
+		if optionMatchesResolved(opts[i].Value, rawState) {
+			return &opts[i]
+		}
+	}
+	return nil
+}
+
+// optionMatchesResolved reports whether a (possibly resolved) stored value
+// corresponds to an option whose raw value contains {{ chihiro.version }}. It
+// strips the static prefix/suffix around the token and checks the stored value
+// matches that shape.
+func optionMatchesResolved(optionValue, stored string) bool {
+	loc := chihiroParamRegex.FindStringIndex(optionValue)
+	if loc == nil {
+		return optionValue == stored
+	}
+	prefix := optionValue[:loc[0]]
+	suffix := optionValue[loc[1]:]
+	return strings.HasPrefix(stored, prefix) && strings.HasSuffix(stored, suffix) &&
+		len(stored) >= len(prefix)+len(suffix)
+}
+
+// applyImpliedFields applies the fields implied by editing a parameter to the
+// cluster object: each implied built-in field is written at its injection path
+// (e.g. version -> spec.topology.version). It mutates cluster in place and is a
+// no-op when the parameter declares no implications. Returns the applied field
+// values (lowercased) so the caller can drive coherent recompute of any other
+// dependents.
+func applyImpliedFields(cluster *unstructured.Unstructured, key, rawState string) map[string]string {
+	implied := impliedFieldValues(key, rawState)
+	if len(implied) == 0 {
+		return nil
+	}
+	for field, value := range implied {
+		path := builtinFieldPath(field)
+		if path == "" {
+			slog.Warn("Implied field has no injection path; skipping", "field", field, "source_param", key)
+			continue
+		}
+		setYAMLPath(cluster.Object, path, value)
+		slog.Info("Applied implied field from parameter edit", "field", field, "value", value, "source_param", key)
+	}
+	return implied
+}
+
+// builtinFieldPath returns the YAML injection path for a built-in field
+// (e.g. "version" -> spec.topology.version), looked up case-insensitively.
+// Returns "" when the field is not a configured injection.
+func builtinFieldPath(field string) string {
+	for key, cfg := range loadInjectionConfig() {
+		if strings.EqualFold(key, field) || strings.EqualFold(canonicalBuiltinKeys[strings.ToLower(key)], field) {
+			return cfg.Path
+		}
+	}
+	return ""
+}
+
 // applyRecomputedDependents recomputes every parameter that depends on any of
 // the changed fields and applies the results to the given cluster object: each
 // recomputed value is written at its configured YAML path and its raw state is

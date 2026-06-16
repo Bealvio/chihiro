@@ -19,6 +19,17 @@ type OptionItem struct {
 	Versions []string `json:"versions,omitempty"`
 }
 
+// ImpliedField declares that editing a parameter should also set another field
+// based on the selected option's metadata. This is the reverse of RecomputeOn:
+// where RecomputeOn pulls a value in when a dependency changes, Implies pushes a
+// value out to a dependency. Field is the target field name (built-in like
+// "version" or another parameter). Source selects what to derive:
+//   - "option_version": the first entry of the selected option's versions list.
+type ImpliedField struct {
+	Field  string `json:"field"`
+	Source string `json:"source,omitempty"`
+}
+
 type TemplateParameter struct {
 	Key         string       `json:"key"`
 	Label       string       `json:"label"`
@@ -43,6 +54,11 @@ type TemplateParameter struct {
 	// parameter can depend on any other field. Requires Path to be set so the
 	// recomputed value can be written to the live object.
 	RecomputeOn []string `json:"recomputeOn,omitempty"`
+	// Implies declares fields that this parameter sets when it is edited, based
+	// on the selected option's metadata (the reverse of RecomputeOn). E.g. a
+	// node-image select can imply the cluster version from the chosen option's
+	// versions list, keeping version and image coherent in both directions.
+	Implies []ImpliedField `json:"implies,omitempty"`
 }
 
 type parameterConfig struct {
@@ -59,6 +75,7 @@ type parameterConfig struct {
 	FalseValue  string      `mapstructure:"false_value"`
 	Path        string      `mapstructure:"path"`
 	RecomputeOn []string    `mapstructure:"recompute_on"`
+	Implies     interface{} `mapstructure:"implies"`
 }
 
 func DiscoverParameters(templateStr string) []TemplateParameter {
@@ -121,6 +138,7 @@ func DiscoverParameters(templateStr string) []TemplateParameter {
 			p.Max = cfg.Max
 			p.Path = cfg.Path
 			p.RecomputeOn = cfg.RecomputeOn
+			p.Implies = normalizeImplies(cfg.Implies)
 			if p.Type == "boolean" {
 				p.TrueValue, p.FalseValue = boolValueStrings(cfg)
 				// For booleans the default is the on/off state ("true"/"false"),
@@ -217,6 +235,7 @@ func loadParameterConfig() map[string]parameterConfig {
 			FalseValue:  getScalarString(fields, "false_value"),
 			Path:        getString(fields, "path"),
 			RecomputeOn: getStringSlice(fields, "recompute_on"),
+			Implies:     fields["implies"],
 		}
 		result[key] = cfg
 	}
@@ -400,6 +419,35 @@ func normalizeOptions(raw interface{}) []OptionItem {
 				out = append(out, oi)
 			}
 		}
+	}
+	return out
+}
+
+// normalizeImplies converts the raw implies value from config (a slice of
+// {field, source} objects) into []ImpliedField. Source defaults to
+// "option_version" when omitted.
+func normalizeImplies(raw interface{}) []ImpliedField {
+	arr, ok := raw.([]interface{})
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]ImpliedField, 0, len(arr))
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		f := ImpliedField{
+			Field:  getString(m, "field"),
+			Source: getString(m, "source"),
+		}
+		if f.Field == "" {
+			continue
+		}
+		if f.Source == "" {
+			f.Source = "option_version"
+		}
+		out = append(out, f)
 	}
 	return out
 }

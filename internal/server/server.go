@@ -1140,16 +1140,21 @@ func (s *Server) handleEditClusterVersion(c *gin.Context) {
 	}
 
 	clusterName := c.Param("name")
-	namespace := c.DefaultQuery("namespace", "capi-system")
 
 	var req struct {
-		Version string `json:"version"`
+		Namespace string `json:"namespace"`
+		Version   string `json:"version"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		slog.Error("Invalid edit version request body", "username", user.Username, "cluster", clusterName, "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
+	}
+
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = "capi-system"
 	}
 
 	// Validate version format and non-empty

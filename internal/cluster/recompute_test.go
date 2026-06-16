@@ -161,3 +161,199 @@ func TestApplyRecomputedDependents_WritesPathAndAnnotation(t *testing.T) {
 		t.Errorf("annotation imageName = %q, want raw 26.05 template", params["imageName"])
 	}
 }
+
+// imageParamConfigWithImplies mirrors imageParamConfig but adds an `implies`
+// mapping: selecting a node image option pushes the option's first compatible
+// version into spec.topology.version.
+func imageParamConfigWithImplies() map[string]interface{} {
+	return map[string]interface{}{
+		"imageName": map[string]interface{}{
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value":    "hephaestus-kaas-25.11-{{ chihiro.version }}",
+					"label":    "25.11",
+					"versions": []interface{}{"v1.35.4"},
+				},
+				map[string]interface{}{
+					"value":    "hephaestus-kaas-26.05-{{ chihiro.version }}",
+					"label":    "26.05",
+					"versions": []interface{}{"v1.36.1"},
+				},
+			},
+			"default":      "hephaestus-kaas-26.05-{{ chihiro.version }}",
+			"editable":     true,
+			"recompute_on": []interface{}{"version"},
+			"implies": []interface{}{
+				map[string]interface{}{
+					"field":  "version",
+					"source": "option_version",
+				},
+			},
+			"path": "spec.topology.variables[0].value",
+		},
+	}
+}
+
+func TestImpliedFieldValues_ReturnsVersionFromOption(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+
+	// Selecting the 26.05 image should imply version v1.36.1.
+	got := impliedFieldValues("imageName", "hephaestus-kaas-26.05-{{ chihiro.version }}")
+	if got == nil {
+		t.Fatal("expected implied fields, got nil")
+	}
+	if got["version"] != "v1.36.1" {
+		t.Errorf("implied version = %q, want v1.36.1", got["version"])
+	}
+}
+
+func TestImpliedFieldValues_OlderImageImpliesOlderVersion(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+
+	got := impliedFieldValues("imageName", "hephaestus-kaas-25.11-{{ chihiro.version }}")
+	if got == nil {
+		t.Fatal("expected implied fields, got nil")
+	}
+	if got["version"] != "v1.35.4" {
+		t.Errorf("implied version = %q, want v1.35.4", got["version"])
+	}
+}
+
+func TestImpliedFieldValues_NoImpliesReturnsNil(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", imageParamConfig())
+
+	got := impliedFieldValues("imageName", "hephaestus-kaas-26.05-v1.36.1")
+	if got != nil {
+		t.Errorf("expected nil for param without implies, got %+v", got)
+	}
+}
+
+func TestImpliedFieldValues_UnknownParamReturnsNil(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+
+	got := impliedFieldValues("nonexistent", "value")
+	if got != nil {
+		t.Errorf("expected nil for unknown param, got %+v", got)
+	}
+}
+
+func TestApplyImpliedFields_SetsVersionOnCluster(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", imageParamConfigWithImplies())
+	// Ensure the version injection path is available.
+	viper.Set("cluster.injections", map[string]interface{}{
+		"version": map[string]interface{}{
+			"path":     "spec.topology.version",
+			"editable": true,
+		},
+	})
+
+	cluster := &unstructured.Unstructured{Object: map[string]interface{}{
+		"spec": map[string]interface{}{
+			"topology": map[string]interface{}{
+				"version": "v1.35.4",
+			},
+		},
+	}}
+
+	implied := applyImpliedFields(cluster, "imageName", "hephaestus-kaas-26.05-{{ chihiro.version }}")
+	if implied == nil || implied["version"] != "v1.36.1" {
+		t.Fatalf("expected implied version v1.36.1, got %+v", implied)
+	}
+
+	// Verify the cluster object was mutated.
+	topology := cluster.Object["spec"].(map[string]interface{})["topology"].(map[string]interface{})
+	if topology["version"] != "v1.36.1" {
+		t.Errorf("cluster version = %v, want v1.36.1", topology["version"])
+	}
+}
+
+func TestApplyImpliedFields_ImpliesTriggerRecompute(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	// Set up both the implies and a second parameter that depends on version.
+	viper.Set("cluster.parameters", map[string]interface{}{
+		"imageName": map[string]interface{}{
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value":    "hephaestus-kaas-26.05-{{ chihiro.version }}",
+					"label":    "26.05",
+					"versions": []interface{}{"v1.36.1"},
+				},
+			},
+			"default":      "hephaestus-kaas-26.05-{{ chihiro.version }}",
+			"editable":     true,
+			"recompute_on": []interface{}{"version"},
+			"implies": []interface{}{
+				map[string]interface{}{
+					"field":  "version",
+					"source": "option_version",
+				},
+			},
+			"path": "spec.topology.variables[0].value",
+		},
+		"imageTag": map[string]interface{}{
+			"type":    "string",
+			"default": "img-{{ chihiro.version }}",
+			// Depends on version, which is implied by imageName.
+			"recompute_on": []interface{}{"version"},
+			"path":         "spec.topology.variables[1].value",
+		},
+	})
+	viper.Set("cluster.template", "v0: {{ chihiro.imageName }} v1: {{ chihiro.imageTag }}")
+	viper.Set("cluster.injections", map[string]interface{}{
+		"version": map[string]interface{}{
+			"path":     "spec.topology.version",
+			"editable": true,
+		},
+	})
+
+	cluster := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"chihiro.io/parameters": `{"imageName":"hephaestus-kaas-25.11-{{ chihiro.version }}","imageTag":"img-v1.35.4"}`,
+			},
+		},
+		"spec": map[string]interface{}{
+			"topology": map[string]interface{}{
+				"version":   "v1.35.4",
+				"variables": []interface{}{},
+			},
+		},
+	}}
+
+	// Simulate editing the node image: implied version + recompute chain.
+	implied := applyImpliedFields(cluster, "imageName", "hephaestus-kaas-26.05-{{ chihiro.version }}")
+	changed := map[string]string{"imagename": "hephaestus-kaas-26.05-{{ chihiro.version }}"}
+	for f, v := range implied {
+		changed[f] = v
+	}
+	applyRecomputedDependents(cluster, changed)
+
+	// The implied version should have been written.
+	topology := cluster.Object["spec"].(map[string]interface{})["topology"].(map[string]interface{})
+	if topology["version"] != "v1.36.1" {
+		t.Errorf("cluster version = %v, want v1.36.1", topology["version"])
+	}
+
+	// The imageTag should also have been recomputed because version changed.
+	vars := topology["variables"].([]interface{})
+	if len(vars) < 2 {
+		t.Fatalf("expected at least 2 variables, got %d", len(vars))
+	}
+	entry := vars[1].(map[string]interface{})
+	if entry["value"] != "img-v1.36.1" {
+		t.Errorf("imageTag value = %v, want img-v1.36.1", entry["value"])
+	}
+}

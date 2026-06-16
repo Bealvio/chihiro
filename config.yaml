@@ -200,8 +200,13 @@ cluster:
       # image option and re-resolves {{ chihiro.version }} into the final node
       # image name, written at `path` in the same update. This is a generic
       # dependency — any parameter may declare recompute_on for other fields.
+      # implies is the reverse direction: editing the node image pushes the
+      # matching version into spec.topology.version so the two stay coherent.
       editable: true
       recompute_on: ["version"]
+      implies:
+        - field: "version"
+          source: "option_version"
       path: "spec.topology.variables[2].value"
     managedSubnetCIDR:
       label: "Managed Subnet CIDR"

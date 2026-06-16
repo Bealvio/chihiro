@@ -843,6 +843,7 @@
             <form id="editParameterForm">
                 <div class="form-group" id="editParameterField"></div>
                 <small id="editParameterDescription" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 16px;"></small>
+                <div id="editParameterImplied" style="display: none; margin-bottom: 16px;"></div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-text" onclick="closeEditParameterModal()">Cancel</button>
                     <button type="submit" class="btn btn-filled">Save</button>
@@ -1113,6 +1114,17 @@
                         const val = extractLabelValue(p.path, cluster.labels);
                         if (val !== undefined) params[p.key] = String(val);
                     }
+                }
+            });
+            // Resolve chihiro token references in parameter values using the
+            // cluster's live state so stored templates display as the
+            // actual resolved value.
+            const liveTokens = {};
+            if (cluster.version) liveTokens.version = cluster.version;
+            Object.keys(params).forEach(k => {
+                const v = params[k];
+                if (typeof v === 'string' && /\{\{\s*chihiro\.\w+\s*\}\}/.test(v)) {
+                    params[k] = resolveChihiroTokens(v, liveTokens);
                 }
             });
             // Only show parameters that are declared in config
@@ -2022,6 +2034,7 @@
                     if (value === current) o.selected = true;
                     sel.appendChild(o);
                 });
+                sel.onchange = function() { renderParameterImpliedFields(); };
                 field.appendChild(sel);
             } else {
                 const input = document.createElement('input');
@@ -2032,11 +2045,67 @@
             }
 
             document.getElementById('editParameterModalOverlay').style.display = 'flex';
+            if (meta && Array.isArray(meta.implies) && meta.implies.length > 0) {
+                renderParameterImpliedFields();
+            }
         }
 
         function closeEditParameterModal() {
             document.getElementById('editParameterModalOverlay').style.display = 'none';
+            document.getElementById('editParameterImplied').style.display = 'none';
             editParameterData = null;
+        }
+
+        // renderParameterImpliedFields shows, for the selected parameter value,
+        // what other fields will be changed by the `implies` mappings. This is
+        // the reverse of renderVersionDependents: the user edits a parameter
+        // (e.g. node image) and the version is pushed to stay coherent.
+        function renderParameterImpliedFields() {
+            const container = document.getElementById('editParameterImplied');
+            if (!editParameterData || !editParameterData.key) {
+                container.style.display = 'none';
+                return;
+            }
+            const meta = (clusterParameters || []).find(
+                p => p.key && p.key.toLowerCase() === editParameterData.key.toLowerCase());
+            if (!meta || !Array.isArray(meta.implies) || meta.implies.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+
+            const input = document.getElementById('editParameterInput');
+            const rawValue = (editParameterData.type === 'boolean')
+                ? (input.checked ? 'true' : 'false')
+                : input.value;
+
+            const rows = meta.implies.map(imp => {
+                let value = '';
+                if (imp.source === 'option_version' && Array.isArray(meta.options)) {
+                    const match = meta.options.find(o => {
+                        const v = (o && typeof o === 'object') ? o.value : o;
+                        return v === rawValue;
+                    });
+                    if (match && match.versions && match.versions.length > 0) {
+                        value = match.versions[0];
+                    }
+                }
+                const label = (editableFields && editableFields[imp.field.toLowerCase()])
+                    ? (editableFields[imp.field.toLowerCase()].label || imp.field)
+                    : parameterLabel(imp.field);
+                return `
+                    <div class="detail-item">
+                        <div class="detail-label">${escapeHtml(label)}</div>
+                        <div class="detail-value">${escapeHtml(value)}</div>
+                    </div>`;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="detail-label" style="margin-bottom: 8px;">Will also be updated</div>
+                ${rows}
+                <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-top: 4px;">
+                    These values are set automatically to stay consistent with the selected option.
+                </small>`;
+            container.style.display = 'block';
         }
 
         function populateUpgradeVersions(currentVersion) {
