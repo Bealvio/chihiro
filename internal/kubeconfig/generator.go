@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -132,7 +133,7 @@ func (g *Generator) GenerateKubeconfig(
 	// public CA certificate, not a secret, so it is safe to embed. If it
 	// cannot be retrieved, fall back to omitting it (the exec plugin/host
 	// trust store handles verification in that case).
-	caData := g.getClusterCAData(ctx, cluster)
+	caData := g.getClusterCAData(ctx, cluster, controlPlane)
 
 	kubeconfigData := &KubeconfigData{
 		ClusterName:     cluster.Name,
@@ -440,97 +441,154 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 // kubeconfig can verify the API server's TLS certificate. The CA cert is a
 // public certificate (not a secret), so it is safe to embed.
 //
-// CAPI stores the CA in more than one place and the exact name/key varies by
-// provider and version, so we try several known sources in order and return the
-// first match (all already base64-encoded, exactly what certificate-authority-
-// data expects):
+// CAPI/Kamaji store the CA in more than one place and the exact name/key varies
+// by provider and version, so we try several known sources in order and return
+// the first match (all already base64-encoded, exactly what certificate-
+// authority-data expects):
 //
 //  1. Secret "<cluster>-ca", key "tls.crt" (CAPI cluster CA, kubernetes.io/tls).
 //  2. Secret "<cluster>-ca", key "ca.crt" (some providers use this key).
 //  3. Secret "<cluster>-kubeconfig", key "value" — a full kubeconfig whose
-//     clusters[].cluster.certificate-authority-data is extracted.
+//     clusters[].cluster.certificate-authority-data is extracted (standard CAPI).
+//  4. Secret "<cluster>-admin-kubeconfig", key "super-admin.conf"/"admin.conf"
+//     — Kamaji emits the admin kubeconfig under these names/keys.
 //
 // On any failure the empty string is returned and verification is left to the
 // exec plugin / host trust store, so kubeconfig generation never fails solely
-// because the CA could not be read.
-func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.ClusterInfo) string {
-	// 1 & 2: the dedicated CA secret, trying both common keys.
-	caSecretName := fmt.Sprintf("%s-ca", cluster.Name)
-	if data := g.readSecretData(ctx, cluster.Namespace, caSecretName); data != nil {
-		for _, key := range []string{"tls.crt", "ca.crt"} {
-			if ca, ok := data[key].(string); ok && ca != "" {
-				slog.Info("Retrieved cluster CA certificate", "cluster_name", cluster.Name, "secret_name", caSecretName, "key", key)
+// because the CA could not be read. Each attempted source is logged at Warn on
+// failure so a missing certificate-authority-data is diagnosable from the logs
+// at the default level (the previous Debug-level logging hid the cause).
+//
+// CAPI/Kamaji name these secrets after the secret "owner", which differs by
+// provider. For kubeadm-style CAPI the owner is the Cluster name; for Kamaji
+// topology-managed clusters the TenantControlPlane carries a generated random
+// suffix (e.g. Cluster "lab" -> control plane "lab-4x6w8"), and its CA/admin
+// kubeconfig secrets are named after that control plane, NOT the Cluster. We
+// therefore try both base names.
+func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.ClusterInfo, controlPlane *unstructured.Unstructured) string {
+	// Candidate base names for the secrets, most specific first. The control
+	// plane name (Kamaji TenantControlPlane, e.g. "lab-4x6w8") is tried before
+	// the Cluster name (kubeadm-style CAPI) since the two diverge for Kamaji.
+	bases := make([]string, 0, 2)
+	if controlPlane != nil {
+		if cpName := controlPlane.GetName(); cpName != "" && cpName != cluster.Name {
+			bases = append(bases, cpName)
+		}
+	}
+	bases = append(bases, cluster.Name)
+
+	tried := make([]string, 0, len(bases)*3)
+
+	for _, base := range bases {
+		// 1 & 2: the dedicated CA secret, trying both common keys.
+		caSecretName := fmt.Sprintf("%s-ca", base)
+		tried = append(tried, caSecretName)
+		if data, err := g.readSecretData(ctx, cluster.Namespace, caSecretName); err != nil {
+			slog.Warn("Could not read cluster CA secret", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "secret_name", caSecretName, "error", err)
+		} else if data != nil {
+			for _, key := range []string{"tls.crt", "ca.crt"} {
+				if ca, ok := data[key].(string); ok && ca != "" {
+					slog.Info("Retrieved cluster CA certificate", "cluster_name", cluster.Name, "secret_name", caSecretName, "key", key)
+					return ca
+				}
+			}
+			slog.Warn("Cluster CA secret has no tls.crt/ca.crt key; trying kubeconfig secrets", "cluster_name", cluster.Name, "secret_name", caSecretName, "keys", getKeys(data))
+		}
+
+		// 3: extract the CA from the standard CAPI-generated kubeconfig secret,
+		// which carries certificate-authority-data under the "value" key.
+		kubeconfigSecretName := fmt.Sprintf("%s-kubeconfig", base)
+		tried = append(tried, kubeconfigSecretName)
+		if data, err := g.readSecretData(ctx, cluster.Namespace, kubeconfigSecretName); err != nil {
+			slog.Warn("Could not read kubeconfig secret", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "secret_name", kubeconfigSecretName, "error", err)
+		} else if data != nil {
+			if ca := caFromKubeconfigSecret(data, "value"); ca != "" {
+				slog.Info("Retrieved cluster CA certificate from kubeconfig secret", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName)
 				return ca
 			}
+			slog.Warn("Kubeconfig secret did not yield certificate-authority-data", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName, "keys", getKeys(data))
 		}
-		slog.Warn("Cluster CA secret has no tls.crt/ca.crt key; trying kubeconfig secret", "cluster_name", cluster.Name, "secret_name", caSecretName)
-	}
 
-	// 3: fall back to extracting the CA from the CAPI-generated kubeconfig
-	// secret, which always carries certificate-authority-data.
-	kubeconfigSecretName := fmt.Sprintf("%s-kubeconfig", cluster.Name)
-	if data := g.readSecretData(ctx, cluster.Namespace, kubeconfigSecretName); data != nil {
-		if ca := caFromKubeconfigSecret(data); ca != "" {
-			slog.Info("Retrieved cluster CA certificate from kubeconfig secret", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName)
-			return ca
+		// 4: Kamaji admin kubeconfig secret, named "<tcp>-admin-kubeconfig" and
+		// storing the kubeconfig under "super-admin.conf"/"admin.conf".
+		adminKubeconfigSecretName := fmt.Sprintf("%s-admin-kubeconfig", base)
+		tried = append(tried, adminKubeconfigSecretName)
+		if data, err := g.readSecretData(ctx, cluster.Namespace, adminKubeconfigSecretName); err != nil {
+			slog.Warn("Could not read admin kubeconfig secret", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "secret_name", adminKubeconfigSecretName, "error", err)
+		} else if data != nil {
+			if ca := caFromKubeconfigSecret(data, "super-admin.conf", "admin.conf", "value"); ca != "" {
+				slog.Info("Retrieved cluster CA certificate from admin kubeconfig secret", "cluster_name", cluster.Name, "secret_name", adminKubeconfigSecretName)
+				return ca
+			}
+			slog.Warn("Admin kubeconfig secret did not yield certificate-authority-data", "cluster_name", cluster.Name, "secret_name", adminKubeconfigSecretName, "keys", getKeys(data))
 		}
-		slog.Warn("Kubeconfig secret did not yield certificate-authority-data", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName)
 	}
 
 	slog.Warn(
 		"Could not retrieve cluster CA from any known source; kubeconfig will omit certificate-authority-data",
 		"cluster_name", cluster.Name,
 		"namespace", cluster.Namespace,
+		"tried_secrets", tried,
 	)
 	return ""
 }
 
 // readSecretData fetches a Secret and returns its "data" map (values are
-// base64-encoded strings). Returns nil if the secret is missing or malformed.
-func (g *Generator) readSecretData(ctx context.Context, namespace, name string) map[string]interface{} {
+// base64-encoded strings). It returns (nil, nil) when the secret simply does
+// not exist yet (a normal, expected state during provisioning), and
+// (nil, err) for any other read failure (e.g. RBAC forbidden) so the caller
+// can surface the real cause instead of silently omitting the CA.
+func (g *Generator) readSecretData(ctx context.Context, namespace, name string) (map[string]interface{}, error) {
 	secretGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 	secret, err := g.client.Resource(secretGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		slog.Debug("Secret not available", "namespace", namespace, "secret_name", name, "error", err)
-		return nil
+		if apierrors.IsNotFound(err) {
+			slog.Debug("Secret not found", "namespace", namespace, "secret_name", name)
+			return nil, nil
+		}
+		return nil, err
 	}
 	data, ok := secret.Object["data"].(map[string]interface{})
 	if !ok {
 		slog.Debug("Secret has no data field", "namespace", namespace, "secret_name", name)
-		return nil
+		return nil, nil
 	}
-	return data
+	return data, nil
 }
 
-// caFromKubeconfigSecret extracts certificate-authority-data from a CAPI
-// kubeconfig secret's "value" key. The value is a base64-encoded kubeconfig
-// YAML document; the returned CA is base64-encoded (as it appears in the
-// kubeconfig), ready for direct use as certificate-authority-data.
-func caFromKubeconfigSecret(data map[string]interface{}) string {
-	encoded, ok := data["value"].(string)
-	if !ok || encoded == "" {
-		return ""
-	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		slog.Debug("Failed to base64-decode kubeconfig secret value", "error", err)
-		return ""
-	}
+// caFromKubeconfigSecret extracts certificate-authority-data from a kubeconfig
+// stored in a secret. It tries each of the given keys in order (e.g. "value"
+// for standard CAPI, "super-admin.conf"/"admin.conf" for Kamaji). Each value is
+// a base64-encoded kubeconfig YAML document; the returned CA is base64-encoded
+// (as it appears in the kubeconfig), ready for direct use as certificate-
+// authority-data.
+func caFromKubeconfigSecret(data map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		encoded, ok := data[key].(string)
+		if !ok || encoded == "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			slog.Debug("Failed to base64-decode kubeconfig secret value", "key", key, "error", err)
+			continue
+		}
 
-	var parsed struct {
-		Clusters []struct {
-			Cluster struct {
-				CertificateAuthorityData string `json:"certificate-authority-data"`
-			} `json:"cluster"`
-		} `json:"clusters"`
-	}
-	if err := yaml.Unmarshal(raw, &parsed); err != nil {
-		slog.Debug("Failed to parse kubeconfig from secret", "error", err)
-		return ""
-	}
-	for _, c := range parsed.Clusters {
-		if c.Cluster.CertificateAuthorityData != "" {
-			return c.Cluster.CertificateAuthorityData
+		var parsed struct {
+			Clusters []struct {
+				Cluster struct {
+					CertificateAuthorityData string `json:"certificate-authority-data"`
+				} `json:"cluster"`
+			} `json:"clusters"`
+		}
+		if err := yaml.Unmarshal(raw, &parsed); err != nil {
+			slog.Debug("Failed to parse kubeconfig from secret", "key", key, "error", err)
+			continue
+		}
+		for _, c := range parsed.Clusters {
+			if c.Cluster.CertificateAuthorityData != "" {
+				return c.Cluster.CertificateAuthorityData
+			}
 		}
 	}
 	return ""
