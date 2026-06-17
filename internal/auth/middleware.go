@@ -29,10 +29,8 @@ func NewMiddleware(provider *OIDCProvider) *Middleware {
 	}
 }
 
-// RequireAuth middleware for Gin framework
 func (m *Middleware) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Skip auth for public endpoints
 		if isPublicEndpoint(c.Request.URL.Path) {
 			slog.Debug("Allowing access to public endpoint", "path", c.Request.URL.Path, "method", c.Request.Method, "remote_addr", c.ClientIP())
 			c.Next()
@@ -43,21 +41,18 @@ func (m *Middleware) RequireAuth() gin.HandlerFunc {
 		if err != nil {
 			slog.Debug("User authentication failed", "path", c.Request.URL.Path, "method", c.Request.Method, "remote_addr", c.ClientIP(), "user_agent", c.Request.Header.Get("User-Agent"), "error", err)
 
-			// Redirect to login for browser requests
 			if strings.Contains(c.Request.Header.Get("Accept"), "text/html") {
 				slog.Debug("Redirecting browser request to login", "path", c.Request.URL.Path, "remote_addr", c.ClientIP())
 				c.Redirect(http.StatusFound, "/login")
 				c.Abort()
 				return
 			}
-			// Return 401 for API requests
 			slog.Debug("Returning 401 for API request", "path", c.Request.URL.Path, "remote_addr", c.ClientIP())
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
 			return
 		}
 
-		// Add user to request context
 		slog.Debug("User authenticated successfully", "username", user.Username, "groups", user.Groups, "path", c.Request.URL.Path, "method", c.Request.Method, "remote_addr", c.ClientIP())
 		ctx := context.WithValue(c.Request.Context(), UserContextKey, user)
 		c.Request = c.Request.WithContext(ctx)
@@ -77,7 +72,7 @@ func CheckUserGroups(userGroups []string, requiredGroups []string) bool {
 
 	if len(requiredGroups) == 0 {
 		slog.Debug("No group requirements, access granted")
-		return true // No group requirement
+		return true
 	}
 
 	userGroupMap := make(map[string]bool)

@@ -342,7 +342,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	spec, _ := obj.Object["spec"].(map[string]interface{})
 	status, _ := obj.Object["status"].(map[string]interface{})
 
-	// Convert labels to map[string]interface{}
 	labels := make(map[string]interface{})
 	for k, v := range obj.GetLabels() {
 		labels[k] = v
@@ -363,16 +362,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 
 	slog.Debug("Parsing cluster", "name", obj.GetName(), "namespace", obj.GetNamespace())
-	slog.Info("Raw cluster status", "name", obj.GetName(), "status", status)
-	if spec != nil {
-		slog.Debug("Found cluster spec", "name", obj.GetName(), "spec_keys", getKeys(spec))
-		if topology, ok := spec["topology"].(map[string]interface{}); ok {
-			slog.Debug("Found cluster topology", "name", obj.GetName(), "topology_keys", getKeys(topology))
-			if workers, ok := topology["workers"].(map[string]interface{}); ok {
-				slog.Debug("Found cluster workers config", "name", obj.GetName(), "workers_keys", getKeys(workers))
-			}
-		}
-	}
 
 	if phase, ok := status["phase"].(string); ok {
 		clusterInfo.Phase = phase
@@ -441,8 +430,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Check for Available field in status (provider-specific).
-	// Only set if not already determined from conditions.
 	if !clusterInfo.Available {
 		if available, ok := status["available"].(bool); ok {
 			clusterInfo.Available = available
@@ -450,42 +437,32 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 
 	if spec != nil {
-		// Try different paths for version
 		if controlPlaneRef, ok := spec["controlPlaneRef"].(map[string]interface{}); ok {
 			if version, ok := controlPlaneRef["version"].(string); ok {
 				clusterInfo.Version = version
 			}
 		}
-		// Also check for topology version
 		if topology, ok := spec["topology"].(map[string]interface{}); ok {
 			if version, ok := topology["version"].(string); ok {
 				clusterInfo.Version = version
 			}
 
-			// Read control plane replicas from the topology
 			if controlPlane, ok := topology["controlPlane"].(map[string]interface{}); ok {
 				clusterInfo.ControlPlaneReplicas = int32(toInt(controlPlane["replicas"]))
 			}
 
-			// Calculate total nodes from machineDeployments
 			if workers, ok := topology["workers"].(map[string]interface{}); ok {
 				if machineDeployments, ok := workers["machineDeployments"].([]interface{}); ok {
-					slog.Debug("Found machine deployments", "name", obj.GetName(), "count", len(machineDeployments))
 					totalReplicas := int32(0)
 					for i, deployment := range machineDeployments {
 						if depMap, ok := deployment.(map[string]interface{}); ok {
-							slog.Debug("Processing machine deployment", "name", obj.GetName(), "deployment_index", i, "keys", getKeys(depMap))
 							if replicas, ok := depMap["replicas"].(int64); ok {
-								slog.Debug("Found replicas count", "name", obj.GetName(), "deployment_index", i, "replicas", replicas, "type", "int64")
 								totalReplicas += int32(replicas)
 							} else if replicas, ok := depMap["replicas"].(float64); ok {
-								slog.Debug("Found replicas count", "name", obj.GetName(), "deployment_index", i, "replicas", replicas, "type", "float64")
 								totalReplicas += int32(replicas)
 							} else if replicas, ok := depMap["replicas"].(int32); ok {
-								slog.Debug("Found replicas count", "name", obj.GetName(), "deployment_index", i, "replicas", replicas, "type", "int32")
 								totalReplicas += replicas
 							} else if replicas, ok := depMap["replicas"].(int); ok {
-								slog.Debug("Found replicas count", "name", obj.GetName(), "deployment_index", i, "replicas", replicas, "type", "int")
 								totalReplicas += int32(replicas)
 							} else {
 								slog.Warn("Machine deployment missing or invalid replicas field", "name", obj.GetName(), "deployment_index", i)
@@ -505,16 +482,13 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 			}
 
 		}
-		// Direct version field
 		if version, ok := spec["version"].(string); ok {
 			clusterInfo.Version = version
 		}
 
-		// Parse cluster network information
 		if clusterNetwork, ok := spec["clusterNetwork"].(map[string]interface{}); ok {
 			network := &ClusterNetwork{}
 
-			// Parse pod CIDRs
 			if pods, ok := clusterNetwork["pods"].(map[string]interface{}); ok {
 				if cidrBlocks, ok := pods["cidrBlocks"].([]interface{}); ok {
 					for _, cidr := range cidrBlocks {
@@ -525,7 +499,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 				}
 			}
 
-			// Parse service CIDRs
 			if services, ok := clusterNetwork["services"].(map[string]interface{}); ok {
 				if cidrBlocks, ok := services["cidrBlocks"].([]interface{}); ok {
 					for _, cidr := range cidrBlocks {
@@ -536,7 +509,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 				}
 			}
 
-			// Parse service domain
 			if serviceDomain, ok := clusterNetwork["serviceDomain"].(string); ok {
 				network.ServiceDomain = serviceDomain
 			}
@@ -546,7 +518,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 	}
 
 	if status != nil {
-		// Try different paths for node count
 		if nodeCount, ok := status["nodeCount"].(float64); ok {
 			clusterInfo.Nodes = int32(nodeCount)
 		}
@@ -556,16 +527,13 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		if nodeCount, ok := status["nodeCount"].(int); ok {
 			clusterInfo.Nodes = int32(nodeCount)
 		}
-		// Try infrastructure status
 		if infra, ok := status["infrastructure"].(map[string]interface{}); ok {
 			if ready, ok := infra["ready"].(bool); ok && ready {
-				// Infrastructure is ready, we might have node info
 				if nodeCount, ok := infra["nodeCount"].(float64); ok {
 					clusterInfo.Nodes = int32(nodeCount)
 				}
 			}
 		}
-		// Try controlPlane status for node count
 		if cp, ok := status["controlPlane"].(map[string]interface{}); ok {
 			if nodeCount, ok := cp["replicas"].(float64); ok {
 				clusterInfo.Nodes = int32(nodeCount)
@@ -576,7 +544,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Extract groups from annotations for display
 	if groupsValue, exists := clusterInfo.Annotations["chihiro.io/groups"]; exists {
 		if groupsStr, ok := groupsValue.(string); ok && groupsStr != "" {
 			groups := strings.Split(groupsStr, ",")
@@ -588,7 +555,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Extract worker groups from annotations for display
 	if wgValue, exists := clusterInfo.Annotations["chihiro.io/worker-groups"]; exists {
 		if wgStr, ok := wgValue.(string); ok && wgStr != "" {
 			var workerGroups []cluster.WorkerGroup
@@ -601,7 +567,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Extract creator from annotations
 	if creatorValue, exists := clusterInfo.Annotations["chihiro.io/creator"]; exists {
 		if creatorStr, ok := creatorValue.(string); ok {
 			clusterInfo.Creator = creatorStr
@@ -609,7 +574,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Extract the parameters set at creation time for display in the UI.
 	if paramsValue, exists := clusterInfo.Annotations["chihiro.io/parameters"]; exists {
 		if paramsStr, ok := paramsValue.(string); ok && paramsStr != "" {
 			params := make(map[string]string)
@@ -622,7 +586,6 @@ func (cw *ClusterWatcher) parseCluster(obj *unstructured.Unstructured) *ClusterI
 		}
 	}
 
-	// Test API endpoint reachability for readiness check
 	if clusterInfo.APIEndpoint != "" {
 		clusterInfo.Ready = cw.testAPIEndpointReachability(clusterInfo.APIEndpoint)
 		slog.Info("API endpoint reachability test result", "cluster", clusterInfo.Name, "endpoint", clusterInfo.APIEndpoint, "ready", clusterInfo.Ready)
@@ -675,7 +638,6 @@ func (cw *ClusterWatcher) GetClustersForUser(userGroups []string) []*ClusterInfo
 }
 
 func (cw *ClusterWatcher) canUserAccessCluster(cluster *ClusterInfo, userGroups []string) bool {
-	// Create user group map for efficient lookup
 	userGroupMap := make(map[string]bool)
 	for _, group := range userGroups {
 		userGroupMap[strings.TrimSpace(group)] = true
@@ -724,8 +686,6 @@ func (cw *ClusterWatcher) canUserAccessCluster(cluster *ClusterInfo, userGroups 
 
 // testAPIEndpointReachability tests if the cluster API endpoint is reachable
 func (cw *ClusterWatcher) testAPIEndpointReachability(endpoint string) bool {
-	// Create HTTP client with TLS config that skips certificate verification
-	// We only care about reachability, not certificate validity
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -735,7 +695,6 @@ func (cw *ClusterWatcher) testAPIEndpointReachability(endpoint string) bool {
 		},
 	}
 
-	// Test the /api endpoint which should return 200 for a working API server
 	testURL := endpoint + "/api"
 
 	slog.Info("Testing API endpoint reachability", "url", testURL)

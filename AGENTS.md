@@ -79,10 +79,15 @@ Things that are correct and must not regress:
 - WebSocket `CheckOrigin` rejects empty/unknown origins.
 - Generated kubeconfigs intentionally omit the OIDC client secret — do not add
   it back into kubeconfig output. The cluster CA certificate (a public cert, not
-  a secret) IS embedded as certificate-authority-data when it can be retrieved
-  from the CAPI `<cluster>-ca` (tls.crt/ca.crt) or `<cluster>-kubeconfig`
-  secrets; retrieval failures fall back to omitting it (verification then left
-  to the exec plugin / host trust store). Keep this multi-source fallback.
+  a secret) IS embedded as certificate-authority-data, retrieved from the CAPI
+  `<cluster>-ca` (tls.crt/ca.crt), `<cluster>-kubeconfig`, or Kamaji
+  `<cluster>-admin-kubeconfig` secrets (tried in order, under both the Cluster
+  and control-plane base names). Keep this multi-source lookup. If the CA cannot
+  be retrieved from any source, kubeconfig generation MUST fail loudly
+  (`getClusterCAData` returns an error and `GenerateKubeconfig` propagates it) —
+  chihiro never emits a kubeconfig without certificate-authority-data, so a
+  transient or RBAC failure cannot silently downgrade TLS verification to the
+  exec plugin / host trust store. Do not reintroduce silent omission.
 - Cluster names validated against a strict regex before creation.
 - Per-IP rate limiter entries are evicted when idle: `Cleanup(maxAge)` removes
   stale entries and `StartCleanup` runs it periodically (wired in

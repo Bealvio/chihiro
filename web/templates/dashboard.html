@@ -263,6 +263,11 @@
             color: var(--log-color-warning, #b06d00);
         }
 
+        .cluster-status.provisioned {
+            background-color: rgba(14, 165, 175, 0.1);
+            color: #0d9488;
+        }
+
         .cluster-details {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -860,7 +865,7 @@
             <p style="color: var(--md-sys-color-error); font-size: 0.9rem; margin-bottom: 32px; position: relative; z-index: 2;">This action cannot be undone.</p>
             <div style="display: flex; gap: 16px; justify-content: flex-end;">
                 <button type="button" class="btn btn-text" onclick="closeDeleteModal()">Cancel</button>
-                <button type="button" class="btn danger" onclick="confirmDelete()">Delete Cluster</button>
+                <button type="button" class="btn danger" onclick="confirmDelete(this)">Delete Cluster</button>
             </div>
         </div>
     </div>
@@ -1244,7 +1249,7 @@
         function phaseStatusClass(phase) {
             switch ((phase || '').toLowerCase()) {
                 case 'provisioned':
-                    return 'ready';
+                    return 'provisioned';
                 case 'failed':
                 case 'deleting':
                     return 'not-ready';
@@ -1445,6 +1450,33 @@
                 delete kubeconfigStatus[key];
             }
             renderKubeconfigStatus(key, state);
+        }
+
+        // setButtonLoading toggles a button into a "working" state: it disables
+        // the button and replaces its label with a spinning progress icon (the
+        // same one used by the kubeconfig status line), then restores the
+        // original markup and disabled state when called with isLoading=false.
+        // Safe to call with a null/undefined button.
+        function setButtonLoading(btn, isLoading, loadingText) {
+            if (!btn) return;
+            if (isLoading) {
+                if (btn.dataset.loading === 'true') return;
+                btn.dataset.loading = 'true';
+                btn.dataset.originalHtml = btn.innerHTML;
+                btn.dataset.wasDisabled = btn.disabled ? 'true' : 'false';
+                const label = loadingText != null ? loadingText : 'Working…';
+                btn.innerHTML =
+                    '<span class="material-symbols-outlined spin" style="margin-right: 4px; font-size: 1rem;">progress_activity</span>' +
+                    '<span>' + escapeHtml(label) + '</span>';
+                btn.disabled = true;
+            } else {
+                if (btn.dataset.loading !== 'true') return;
+                btn.innerHTML = btn.dataset.originalHtml || btn.innerHTML;
+                btn.disabled = btn.dataset.wasDisabled === 'true';
+                delete btn.dataset.loading;
+                delete btn.dataset.originalHtml;
+                delete btn.dataset.wasDisabled;
+            }
         }
 
         // downloadKubeconfig fetches the generated kubeconfig via JS so we can
@@ -2609,6 +2641,9 @@
                 }
             });
 
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Creating…');
+
             fetch('/api/clusters', {
                 method: 'POST',
                 credentials: 'include',
@@ -2628,6 +2663,9 @@
             .catch(error => {
                 console.error('Error creating cluster:', error);
                 alert('Failed to create cluster: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
@@ -2664,6 +2702,9 @@
                 }
             }
 
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Saving…');
+
             fetch(`/api/clusters/${editClusterData.name}/groups`, {
                 method: 'PUT',
                 credentials: 'include',
@@ -2684,6 +2725,9 @@
             .catch(error => {
                 console.error('Error updating groups:', error);
                 alert('Failed to update groups');
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
@@ -2697,6 +2741,9 @@
                 alert('At least one worker group is required');
                 return;
             }
+
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Saving…');
 
             fetch(`/api/clusters/${editNodesData.name}/worker-groups`, {
                 method: 'PUT',
@@ -2720,6 +2767,9 @@
             .catch(error => {
                 console.error('Error updating worker groups:', error);
                 alert('Failed to update worker groups: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
@@ -2734,6 +2784,9 @@
                 alert('Control plane replicas must be at least 1');
                 return;
             }
+
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Saving…');
 
             fetch(`/api/clusters/${editControlPlaneData.name}/control-plane`, {
                 method: 'PUT',
@@ -2757,6 +2810,9 @@
             .catch(error => {
                 console.error('Error updating control plane replicas:', error);
                 alert('Failed to update control plane replicas: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
@@ -2777,6 +2833,9 @@
                 alert('Selected version must be newer than the current version');
                 return;
             }
+
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Upgrading…');
 
             fetch(`/api/clusters/${editVersionData.name}/version`, {
                 method: 'PUT',
@@ -2800,6 +2859,9 @@
             .catch(error => {
                 console.error('Error updating version:', error);
                 alert('Failed to update cluster version: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
@@ -2814,6 +2876,9 @@
             } else {
                 value = input.value;
             }
+
+            const submitBtn = e.submitter;
+            setButtonLoading(submitBtn, true, 'Saving…');
 
             const url = `/api/clusters/${encodeURIComponent(editParameterData.name)}/parameter`
                 + `?namespace=${encodeURIComponent(editParameterData.namespace)}`;
@@ -2840,11 +2905,16 @@
             .catch(error => {
                 console.error('Error updating parameter:', error);
                 alert('Failed to update parameter: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(submitBtn, false);
             });
         });
 
-        function confirmDelete() {
+        function confirmDelete(btn) {
             if (!deleteClusterData) return;
+
+            setButtonLoading(btn, true, 'Deleting…');
 
             fetch(`/api/clusters/${deleteClusterData.name}`, {
                 method: 'DELETE',
@@ -2863,6 +2933,9 @@
             .catch(error => {
                 console.error('Error deleting cluster:', error);
                 alert('Failed to delete cluster');
+            })
+            .finally(() => {
+                setButtonLoading(btn, false);
             });
         }
 

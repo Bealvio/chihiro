@@ -52,10 +52,8 @@ func validateGroupNames(groups []string) string {
 func NewServer(w *watcher.ClusterWatcher, m *cluster.Manager, authMiddleware *auth.Middleware) *Server {
 	slog.Info("Initializing server with routes and middleware")
 
-	// Set Gin to release mode to reduce log verbosity
 	gin.SetMode(gin.ReleaseMode)
 
-	// Disable Gin's default logging to use our slog instead
 	if os.Getenv("DEBUG") == "" {
 		gin.DefaultWriter = io.Discard
 		gin.DefaultErrorWriter = io.Discard
@@ -96,16 +94,12 @@ func (s *Server) Close() {
 }
 
 func (s *Server) setupRoutes() {
-	// Add custom recovery and logging middleware
 	s.router.Use(gin.Recovery())
 	s.router.Use(s.loggingMiddleware())
 	s.router.Use(s.securityHeadersMiddleware())
 	s.router.Use(s.requestSizeLimitMiddleware())
 
-	// Load HTML templates
 	s.router.LoadHTMLGlob("web/templates/*")
-
-	// Serve static files
 	s.router.Static("/static", "web/static")
 
 	// Create rate limiters and start periodic eviction of idle per-IP entries
@@ -123,7 +117,6 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/health", s.handleHealth)
 	s.router.GET("/favicon.ico", s.handleFavicon)
 
-	// Protected routes with API rate limiting
 	protected := s.router.Group("/")
 	protected.Use(s.auth.RequireAuth())
 	protected.Use(middleware.RateLimitMiddleware(apiRateLimiter))
@@ -151,7 +144,6 @@ func (s *Server) setupRoutes() {
 	protected.GET("/ws", s.handleWebSocket)
 }
 
-// Logging middleware for Gin
 func (s *Server) loggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		slog.Debug("HTTP request", "method", c.Request.Method, "path", c.Request.URL.Path, "remote_addr", c.ClientIP(), "user_agent", c.Request.Header.Get("User-Agent"))
@@ -159,7 +151,6 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Security headers middleware
 func (s *Server) securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:")
@@ -175,7 +166,6 @@ func (s *Server) securityHeadersMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Request size limit middleware
 func (s *Server) requestSizeLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1048576) // 1MB limit
@@ -1271,7 +1261,6 @@ func (s *Server) handleEditClusterParameter(c *gin.Context) {
 	})
 }
 
-// Helper function to get username or "anonymous" for logging
 func getUsernameOrAnon(user *auth.UserInfo) string {
 	if user != nil && user.Username != "" {
 		return user.Username
@@ -1279,7 +1268,6 @@ func getUsernameOrAnon(user *auth.UserInfo) string {
 	return "anonymous"
 }
 
-// Helper function to check if user can modify a cluster
 // fieldEditable reports whether the given cluster field is opt-in editable per
 // the editable flag on the matching cluster.parameters entry. When disabled it
 // writes a 403 response and returns false so the caller can return early.

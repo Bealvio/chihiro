@@ -19,6 +19,11 @@ rules:
   - apiGroups: ['']
     resources: ['namespaces']
     verbs: ['get', 'list', 'watch']
+  # Secret read permission for retrieving cluster CA certificates
+  # (used to embed certificate-authority-data in generated kubeconfigs)
+  - apiGroups: ['']
+    resources: ['secrets']
+    verbs: ['get']
   # Cluster API permissions for watching and viewing clusters
   - apiGroups: ['cluster.x-k8s.io']
     resources: ['clusters', 'machinesets', 'machines', 'machinedeployments']

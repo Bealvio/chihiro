@@ -39,13 +39,11 @@ func init() {
 }
 
 func runServer() {
-	// Configure structured logging
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") != "" || os.Getenv("CHIHIRO_DEBUG") != "" {
 		logLevel = slog.LevelDebug
 	}
 
-	// Create a JSON handler for structured logging
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level:     logLevel,
 		AddSource: true,
@@ -55,7 +53,6 @@ func runServer() {
 	slog.Info("Starting cluster watcher application", "version", "v1.0.0", "log_level", logLevel.String())
 	slog.Info("Loading configuration from environment variables and config file")
 
-	// Override viper config with environment variables
 	if env := os.Getenv("CHIHIRO_CLUSTER_DOMAIN"); env != "" {
 		viper.Set("cluster.domain", env)
 	}
@@ -112,13 +109,11 @@ func runServer() {
 			viper.Set("cluster.limits.max_total_cp", maxCP)
 		}
 	}
-	// Validate config early — refuse to start with broken configuration.
 	if err := cluster.ValidateConfig(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 
-	// Log cluster configuration
 	clusterDomain := viper.GetString("cluster.domain")
 	clusterPort := viper.GetInt("cluster.port")
 	adminGroups := viper.GetStringSlice("cluster.admin_groups")
@@ -154,17 +149,14 @@ func runServer() {
 
 	clusterManager := cluster.NewManager(clusterWatcher.GetClient(), clusterWatcher.GetClusterGVR())
 
-	// Setup server configuration with environment variable overrides
 	host := getEnvOrConfig("CHIHIRO_HOST", "host", "0.0.0.0")
 	port := getEnvOrConfigInt("CHIHIRO_PORT", "port", 8080)
 
 	slog.Info("Server configuration", "host", host, "port", port)
 
-	// Setup OIDC authentication
 	var authConfig auth.Config
 	viper.UnmarshalKey("oidc", &authConfig)
 
-	// Override with environment variables (takes precedence over config file)
 	if env := os.Getenv("CHIHIRO_OIDC_ISSUER_URL"); env != "" {
 		authConfig.IssuerURL = env
 	}
@@ -178,29 +170,25 @@ func runServer() {
 		authConfig.SessionKey = env
 	}
 
-	// Set a placeholder redirect URL - will be dynamically determined from request headers
-	// This is just used during OIDC provider initialization, actual redirect URL is determined per-request
+	// Placeholder — actual redirect URL is determined per-request from headers.
 	if authConfig.RedirectURL == "" {
 		authConfig.RedirectURL = "http://localhost:8080/auth/callback"
 	}
 
 	slog.Info("OIDC configuration", "issuer_url", authConfig.IssuerURL, "client_id", authConfig.ClientID, "note", "redirect_url will be dynamically determined from request headers")
 
-	// Validate OIDC configuration
 	if authConfig.IssuerURL == "" || authConfig.ClientID == "" || authConfig.ClientSecret == "" {
 		slog.Error("OIDC configuration incomplete", "missing_fields", "issuer-url, client-id, or client-secret")
 		slog.Error("Set CHIHIRO_OIDC_ISSUER_URL, CHIHIRO_OIDC_CLIENT_ID, and CHIHIRO_OIDC_CLIENT_SECRET environment variables")
 		os.Exit(1)
 	}
 
-	// Validate session key (must be 32+ bytes for AES-256)
 	if len(authConfig.SessionKey) < 32 {
 		slog.Error("Session key must be at least 32 bytes", "current_length", len(authConfig.SessionKey))
 		slog.Error("Set CHIHIRO_SESSION_KEY environment variable with a secure random key (openssl rand -base64 32)")
 		os.Exit(1)
 	}
 
-	// Setup Redis session store with environment variable overrides
 	redisAddr := getEnvOrConfig("CHIHIRO_REDIS_ADDR", "redis.addr", "localhost:6379")
 	redisUsername := getEnvOrConfig("CHIHIRO_REDIS_USERNAME", "redis.username", "")
 	redisPassword := getEnvOrConfig("CHIHIRO_REDIS_PASSWORD", "redis.password", "")
@@ -209,7 +197,6 @@ func runServer() {
 	slog.Info("Redis configuration", "addr", redisAddr, "username", redisUsername, "session_ttl", sessionTTL)
 	slog.Info("Connecting to Redis for session storage")
 
-	// Test Redis connection
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     redisAddr,
 		Username: redisUsername,
@@ -220,9 +207,8 @@ func runServer() {
 		slog.Error("Could not connect to Redis", "error", err)
 		os.Exit(1)
 	}
-	redisClient.Close() // Close test connection
+	redisClient.Close()
 
-	// Create Redis session store
 	sessionStore, err := redistore.NewRediStore(10, "tcp", redisAddr, redisUsername, redisPassword, []byte(authConfig.SessionKey))
 	if err != nil {
 		slog.Error("Could not create Redis session store", "error", err)
@@ -235,7 +221,6 @@ func runServer() {
 	}()
 	sessionStore.SetMaxAge(sessionTTL)
 
-	// Configure secure cookie options
 	sessionStore.Options.Path = "/"
 	sessionStore.Options.MaxAge = sessionTTL
 	sessionStore.Options.HttpOnly = true
@@ -266,11 +251,6 @@ func runServer() {
 
 	authMiddleware := auth.NewMiddleware(oidcProvider)
 
-	// Construct the server before starting the watcher so the OIDC kubeconfig
-	// prober is registered on the watcher up front. Otherwise the watcher's
-	// initial load and first readiness tick run with a nil prober, leaving
-	// KubeconfigReady false (and the download button greyed) for up to a full
-	// monitor interval after restart even for long-existing clusters.
 	srv := server.NewServer(clusterWatcher, clusterManager, authMiddleware)
 	defer srv.Close()
 
@@ -321,7 +301,6 @@ func parseBool(s string) bool {
 	}
 }
 
-// Helper functions for environment variable overrides
 func getEnvOrConfig(envKey, configKey, defaultValue string) string {
 	if env := os.Getenv(envKey); env != "" {
 		return env

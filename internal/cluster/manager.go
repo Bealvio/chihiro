@@ -162,7 +162,6 @@ func NewManager(client dynamic.Interface, clusterGVR schema.GroupVersionResource
 func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 	slog.Debug("Looking for next available IP range")
 
-	// Get all existing clusters
 	gvr := m.clusterGVR
 
 	list, err := m.client.Resource(gvr).List(ctx, metav1.ListOptions{})
@@ -173,7 +172,6 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 
 	slog.Debug("Found clusters for IP range analysis", "cluster_count", len(list.Items))
 
-	// Track used IP ranges
 	usedRanges := make(map[int]bool)
 
 	for _, item := range list.Items {
@@ -185,9 +183,8 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 							if name, ok := varMap["name"].(string); ok && name == "ipv4Config" {
 								if value, ok := varMap["value"].(map[string]interface{}); ok {
 									if addresses, ok := value["addresses"].([]interface{}); ok && len(addresses) > 0 {
-										if addr, ok := addresses[0].(string); ok {
-											// Extract range number from address like "10.250.X.0-10.250.X.10"
-											if rangeNum := extractRangeNumber(addr); rangeNum != -1 {
+											if addr, ok := addresses[0].(string); ok {
+												if rangeNum := extractRangeNumber(addr); rangeNum != -1 {
 												usedRanges[rangeNum] = true
 												slog.Debug("Found used IP range", "range_number", rangeNum, "address", addr)
 											}
@@ -204,7 +201,6 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 
 	slog.Debug("Used IP ranges", "count", len(usedRanges), "ranges", getUsedRangeNumbers(usedRanges))
 
-	// Find next available range from 10 to 50
 	for i := 10; i <= 50; i++ {
 		if !usedRanges[i] {
 			ipRange := fmt.Sprintf("10.250.%d.0-10.250.%d.10", i, i)
@@ -218,7 +214,6 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 }
 
 func extractRangeNumber(address string) int {
-	// Parse address like "10.250.X.0-10.250.X.10" to extract X
 	parts := strings.Split(address, "-")
 	if len(parts) != 2 {
 		return -1
@@ -289,7 +284,6 @@ func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes, ne
 
 	slog.Debug("Validating cluster limits (Chihiro-managed only)", "current_clusters", currentClusters, "max_clusters", maxClusters, "current_nodes", currentTotalNodes, "max_nodes", maxTotalNodes, "current_cp", currentTotalCP, "max_cp", maxTotalCP, "new_cluster_nodes", newClusterNodes, "new_cluster_cp", newClusterCPReplicas)
 
-	// Check cluster limit
 	if maxClusters > 0 && currentClusters >= maxClusters {
 		slog.Warn("Cluster creation blocked: cluster limit exceeded", "current_clusters", currentClusters, "max_clusters", maxClusters)
 		return fmt.Errorf("cluster limit exceeded: current %d, maximum %d clusters allowed", currentClusters, maxClusters)
@@ -418,7 +412,6 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	// Set default groups if not provided
 	groups := req.Groups
 	if groups == "" {
-		// Use admin groups from config as default
 		adminGroups := viper.GetStringSlice("cluster.admin_groups")
 		if len(adminGroups) == 0 {
 			adminGroups = []string{"cluster-admin"}
@@ -481,7 +474,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 			placeholder := fmt.Sprintf("{{ chihiro.%s }}", key)
 
 			// Already resolved in a previous iteration — skip.
-			if strings.Contains(templateStr, placeholder) == false {
+			if !strings.Contains(templateStr, placeholder) {
 				continue
 			}
 
@@ -681,7 +674,6 @@ func (m *Manager) UpdateClusterGroups(ctx context.Context, clusterName, namespac
 func (m *Manager) ValidateNodeCountUpdate(ctx context.Context, clusterName, namespace string, newNodeCount int32) error {
 	maxTotalNodes := viper.GetInt("cluster.limits.max_total_nodes")
 
-	// If no total node limit is configured, skip validation
 	if maxTotalNodes <= 0 {
 		slog.Debug("No total node limit configured, skipping validation")
 		return nil
@@ -726,10 +718,8 @@ func (m *Manager) ValidateNodeCountUpdate(ctx context.Context, clusterName, name
 	totalNodes := int32(0)
 	for _, item := range list.Items {
 		if item.GetName() == clusterName && item.GetNamespace() == namespace {
-			// Use the new node count for this cluster
 			totalNodes += newNodeCount
 		} else {
-			// Use current node count for other clusters
 			if spec, ok := item.Object["spec"].(map[string]interface{}); ok {
 				if topology, ok := spec["topology"].(map[string]interface{}); ok {
 					if workers, ok := topology["workers"].(map[string]interface{}); ok {
@@ -763,7 +753,6 @@ func (m *Manager) ValidateNodeCountUpdate(ctx context.Context, clusterName, name
 func (m *Manager) UpdateClusterNodeCount(ctx context.Context, clusterName, namespace string, nodeCount int32) error {
 	slog.Debug("Updating cluster node count", "cluster", clusterName, "namespace", namespace, "nodes", nodeCount)
 
-	// Validate node count limits
 	if err := m.ValidateNodeCountUpdate(ctx, clusterName, namespace, nodeCount); err != nil {
 		return err
 	}

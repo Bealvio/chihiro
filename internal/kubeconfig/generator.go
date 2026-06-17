@@ -131,9 +131,13 @@ func (g *Generator) GenerateKubeconfig(
 	// Retrieve the cluster CA certificate from the CAPI-managed CA secret so
 	// the kubeconfig can verify the API server's TLS certificate. This is a
 	// public CA certificate, not a secret, so it is safe to embed. If it
-	// cannot be retrieved, fall back to omitting it (the exec plugin/host
-	// trust store handles verification in that case).
-	caData := g.getClusterCAData(ctx, cluster, controlPlane)
+	// cannot be retrieved, fail rather than emit a kubeconfig without
+	// certificate-authority-data — we never silently downgrade verification.
+	caData, err := g.getClusterCAData(ctx, cluster, controlPlane)
+	if err != nil {
+		slog.Error("Failed to retrieve cluster CA certificate", "cluster_name", cluster.Name, "namespace", cluster.Namespace, "error", err)
+		return "", fmt.Errorf("failed to generate kubeconfig: %v", err)
+	}
 
 	kubeconfigData := &KubeconfigData{
 		ClusterName:     cluster.Name,
@@ -453,11 +457,12 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 //  4. Secret "<cluster>-admin-kubeconfig", key "super-admin.conf"/"admin.conf"
 //     — Kamaji emits the admin kubeconfig under these names/keys.
 //
-// On any failure the empty string is returned and verification is left to the
-// exec plugin / host trust store, so kubeconfig generation never fails solely
-// because the CA could not be read. Each attempted source is logged at Warn on
-// failure so a missing certificate-authority-data is diagnosable from the logs
-// at the default level (the previous Debug-level logging hid the cause).
+// If the CA cannot be retrieved from any known source, an error is returned and
+// the caller must fail kubeconfig generation: chihiro never emits a kubeconfig
+// without certificate-authority-data, so a transient/RBAC failure cannot
+// silently downgrade verification to the exec plugin / host trust store. Each
+// attempted source is logged at Warn on failure so the cause is diagnosable
+// from the logs at the default level.
 //
 // CAPI/Kamaji name these secrets after the secret "owner", which differs by
 // provider. For kubeadm-style CAPI the owner is the Cluster name; for Kamaji
@@ -465,7 +470,7 @@ func (g *Generator) getClusterEndpoint(cluster *watcher.ClusterInfo, clusterSpec
 // suffix (e.g. Cluster "lab" -> control plane "lab-4x6w8"), and its CA/admin
 // kubeconfig secrets are named after that control plane, NOT the Cluster. We
 // therefore try both base names.
-func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.ClusterInfo, controlPlane *unstructured.Unstructured) string {
+func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.ClusterInfo, controlPlane *unstructured.Unstructured) (string, error) {
 	// Candidate base names for the secrets, most specific first. The control
 	// plane name (Kamaji TenantControlPlane, e.g. "lab-4x6w8") is tried before
 	// the Cluster name (kubeadm-style CAPI) since the two diverge for Kamaji.
@@ -489,7 +494,7 @@ func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.Clust
 			for _, key := range []string{"tls.crt", "ca.crt"} {
 				if ca, ok := data[key].(string); ok && ca != "" {
 					slog.Info("Retrieved cluster CA certificate", "cluster_name", cluster.Name, "secret_name", caSecretName, "key", key)
-					return ca
+					return ca, nil
 				}
 			}
 			slog.Warn("Cluster CA secret has no tls.crt/ca.crt key; trying kubeconfig secrets", "cluster_name", cluster.Name, "secret_name", caSecretName, "keys", getKeys(data))
@@ -504,7 +509,7 @@ func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.Clust
 		} else if data != nil {
 			if ca := caFromKubeconfigSecret(data, "value"); ca != "" {
 				slog.Info("Retrieved cluster CA certificate from kubeconfig secret", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName)
-				return ca
+				return ca, nil
 			}
 			slog.Warn("Kubeconfig secret did not yield certificate-authority-data", "cluster_name", cluster.Name, "secret_name", kubeconfigSecretName, "keys", getKeys(data))
 		}
@@ -518,19 +523,19 @@ func (g *Generator) getClusterCAData(ctx context.Context, cluster *watcher.Clust
 		} else if data != nil {
 			if ca := caFromKubeconfigSecret(data, "super-admin.conf", "admin.conf", "value"); ca != "" {
 				slog.Info("Retrieved cluster CA certificate from admin kubeconfig secret", "cluster_name", cluster.Name, "secret_name", adminKubeconfigSecretName)
-				return ca
+				return ca, nil
 			}
 			slog.Warn("Admin kubeconfig secret did not yield certificate-authority-data", "cluster_name", cluster.Name, "secret_name", adminKubeconfigSecretName, "keys", getKeys(data))
 		}
 	}
 
-	slog.Warn(
-		"Could not retrieve cluster CA from any known source; kubeconfig will omit certificate-authority-data",
+	slog.Error(
+		"Could not retrieve cluster CA from any known source",
 		"cluster_name", cluster.Name,
 		"namespace", cluster.Namespace,
 		"tried_secrets", tried,
 	)
-	return ""
+	return "", fmt.Errorf("cluster CA certificate not available for cluster %q (tried secrets: %v)", cluster.Name, tried)
 }
 
 // readSecretData fetches a Secret and returns its "data" map (values are
@@ -595,10 +600,10 @@ func caFromKubeconfigSecret(data map[string]interface{}, keys ...string) string 
 }
 
 func (g *Generator) renderKubeconfig(data *KubeconfigData) string {
-	// Build cluster configuration. Embed the cluster CA certificate when it was
-	// retrieved so clients can verify the API server's TLS certificate; if it
-	// is unavailable, fall back to the server entry alone and let the exec
-	// plugin / host trust store handle verification.
+	// Build cluster configuration with the embedded CA certificate so clients
+	// can verify the API server's TLS certificate. The CA is guaranteed present
+	// by GenerateKubeconfig (generation fails otherwise), so it is always
+	// written here.
 	// The template indents the first line of this block with 4 spaces, so the
 	// "server" line must NOT carry its own leading spaces; continuation lines
 	// supply their own 4-space indent to align under "- cluster:".

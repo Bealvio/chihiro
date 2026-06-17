@@ -35,7 +35,6 @@ func init() {
 	rootCmd.PersistentFlags().Int("port", 8080, "port to run the web server on")
 	rootCmd.PersistentFlags().String("host", "0.0.0.0", "host to bind the web server to")
 
-	// OIDC configuration
 	rootCmd.PersistentFlags().String("oidc-issuer-url", "", "OIDC issuer URL")
 	rootCmd.PersistentFlags().String("oidc-client-id", "", "OIDC client ID")
 	rootCmd.PersistentFlags().String("oidc-client-secret", "", "OIDC client secret")
