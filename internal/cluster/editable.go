@@ -3,6 +3,7 @@ package cluster
 import (
 	"strings"
 
+	"github.com/Bealvio/chihiro/internal/auth"
 	"github.com/spf13/viper"
 )
 
@@ -28,17 +29,23 @@ type EditableField struct {
 	// RecomputeOn lists fields whose edit should also recompute this one. Empty
 	// for built-in injection fields.
 	RecomputeOn []string `json:"recomputeOn,omitempty"`
+	// VisibleGroups restricts which OIDC groups can edit this field. When
+	// empty, the field is editable by all users who have general cluster modify
+	// permission (subject to the Enabled flag). The value is always shown in
+	// the "More details" read-only section regardless of group membership.
+	VisibleGroups []string `json:"visibleGroups,omitempty"`
 }
 
 // injectionConfig is a single cluster.injections entry. path is the YAML path
 // the built-in value is written to (may be empty for annotation-managed fields
 // such as groups). The remaining fields mirror the editable metadata.
 type injectionConfig struct {
-	Path     string
-	Label    string
-	Editable bool
-	Min      *int
-	Max      *int
+	Path          string
+	Label         string
+	Editable      bool
+	Min           *int
+	Max           *int
+	VisibleGroups []string
 }
 
 // canonicalBuiltinKeys maps lowercase built-in keys back to their canonical
@@ -72,11 +79,12 @@ func loadInjectionConfig() map[string]injectionConfig {
 			continue
 		}
 		result[strings.ToLower(key)] = injectionConfig{
-			Path:     getString(fields, "path"),
-			Label:    getString(fields, "label"),
-			Editable: getBool(fields, "editable"),
-			Min:      getIntPtr(fields, "min"),
-			Max:      getIntPtr(fields, "max"),
+			Path:          getString(fields, "path"),
+			Label:         getString(fields, "label"),
+			Editable:      getBool(fields, "editable"),
+			Min:           getIntPtr(fields, "min"),
+			Max:           getIntPtr(fields, "max"),
+			VisibleGroups: getStringSlice(fields, "visible_groups"),
 		}
 	}
 	return result
@@ -102,10 +110,11 @@ func GetEditableFields(templateStr string) []EditableField {
 			outKey = c
 		}
 		fields = append(fields, EditableField{
-			Key:     outKey,
-			Enabled: true,
-			Min:     cfg.Min,
-			Max:     cfg.Max,
+			Key:           outKey,
+			Enabled:       true,
+			Min:           cfg.Min,
+			Max:           cfg.Max,
+			VisibleGroups: cfg.VisibleGroups,
 		})
 	}
 
@@ -128,15 +137,16 @@ func GetEditableFields(templateStr string) []EditableField {
 			ptype = "string"
 		}
 		ef := EditableField{
-			Key:         outKey,
-			Enabled:     true,
-			Min:         cfg.Min,
-			Max:         cfg.Max,
-			Type:        ptype,
-			Path:        cfg.Path,
-			Options:     normalizeOptions(cfg.Options),
-			Label:       cfg.Label,
-			RecomputeOn: cfg.RecomputeOn,
+			Key:           outKey,
+			Enabled:       true,
+			Min:           cfg.Min,
+			Max:           cfg.Max,
+			Type:          ptype,
+			Path:          cfg.Path,
+			Options:       normalizeOptions(cfg.Options),
+			Label:         cfg.Label,
+			RecomputeOn:   cfg.RecomputeOn,
+			VisibleGroups: cfg.VisibleGroups,
 		}
 		if ptype == "boolean" {
 			ef.TrueValue, ef.FalseValue = boolValueStrings(cfg)
@@ -176,4 +186,19 @@ func getIntPtr(m map[string]interface{}, key string) *int {
 	default:
 		return nil
 	}
+}
+
+// UserCanEditField reports whether the given user groups are permitted to edit
+// a field with the specified VisibleGroups. An empty VisibleGroups list means
+// the field is editable by all users (subject to the Enabled flag). Admins
+// (users in the cluster.admin_groups) can always edit any field.
+func UserCanEditField(visibleGroups, userGroups []string) bool {
+	if len(visibleGroups) == 0 {
+		return true
+	}
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	if auth.CheckUserGroups(userGroups, adminGroups) {
+		return true
+	}
+	return auth.CheckUserGroups(userGroups, visibleGroups)
 }

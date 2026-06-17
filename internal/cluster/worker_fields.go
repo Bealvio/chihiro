@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Bealvio/chihiro/internal/auth"
 	"github.com/spf13/viper"
 	"sigs.k8s.io/yaml"
 )
@@ -28,6 +29,9 @@ type WorkerGroupField struct {
 	Required bool     `json:"required"`
 	Min      *int     `json:"min,omitempty"`
 	Max      *int     `json:"max,omitempty"`
+	// VisibleGroups restricts which OIDC groups can see/edit this field. When
+	// empty, the field is visible/editable to all authenticated users.
+	VisibleGroups []string `json:"visibleGroups,omitempty"`
 	// order is the display order; not serialised.
 	order int
 }
@@ -50,14 +54,15 @@ func LoadWorkerGroupFields() []WorkerGroupField {
 			continue
 		}
 		f := WorkerGroupField{
-			Key:      key,
-			Label:    getString(m, "label"),
-			Type:     getString(m, "type"),
-			Options:  getStringSlice(m, "options"),
-			Default:  getString(m, "default"),
-			Required: getBool(m, "required"),
-			Min:      getIntPtr(m, "min"),
-			Max:      getIntPtr(m, "max"),
+			Key:           key,
+			Label:         getString(m, "label"),
+			Type:          getString(m, "type"),
+			Options:       getStringSlice(m, "options"),
+			Default:       getString(m, "default"),
+			Required:      getBool(m, "required"),
+			Min:           getIntPtr(m, "min"),
+			Max:           getIntPtr(m, "max"),
+			VisibleGroups: getStringSlice(m, "visible_groups"),
 		}
 		if f.Label == "" {
 			f.Label = humanizeKey(key)
@@ -180,4 +185,21 @@ func renderWorkerGroupMachineDeployment(wg WorkerGroup, fields []WorkerGroupFiel
 		md = map[string]interface{}{}
 	}
 	return md, nil
+}
+
+// FilterWorkerGroupFieldsByGroups returns only the worker-group fields whose
+// VisibleGroups setting permits the given user groups. A field with an empty
+// VisibleGroups list is visible to everyone.
+func FilterWorkerGroupFieldsByGroups(fields []WorkerGroupField, userGroups []string) []WorkerGroupField {
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	if auth.CheckUserGroups(userGroups, adminGroups) {
+		return fields
+	}
+	var filtered []WorkerGroupField
+	for _, f := range fields {
+		if len(f.VisibleGroups) == 0 || auth.CheckUserGroups(userGroups, f.VisibleGroups) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
 }

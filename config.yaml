@@ -34,6 +34,13 @@ cluster:
     max_clusters: 5
     max_total_nodes: 10
     max_total_cp: 9
+  # visible_groups restricts which OIDC groups can see/edit a parameter or field.
+  # When omitted or empty, the parameter is visible/editable to all authenticated
+  # users (subject to the editable flag). Admins (in admin_groups) always see and
+  # can edit everything. The parameter value is always visible in the read-only
+  # "More details" panel regardless of group membership.
+  #
+  # Applies to: cluster.parameters, cluster.injections, cluster.worker_group_fields
   # Per-worker-group form fields shown in the create/edit UI. Each entry only
   # describes one input; WHERE its value lands in the CAPI machineDeployment is
   # decided entirely by worker_group_template below. This keeps the two
@@ -130,6 +137,9 @@ cluster:
       editable: true
       min: 1
       max: 9
+      # Only kube-admins can edit control plane replicas after creation.
+      # visible_groups:
+      #   - kube-admin
   template: |
     apiVersion: cluster.x-k8s.io/v1beta2
     kind: Cluster
@@ -219,6 +229,8 @@ cluster:
       false_value: disabled
       editable: true
       path: "metadata.labels.'sveltos.argus.rpcu.io/cilium'"
+      # Only users in these groups can toggle this parameter after creation.
+      # visible_groups: []
     oidcRbac:
       label: "OIDC RBAC"
       description: "Enable OIDC RBAC addon via Sveltos"
@@ -228,6 +240,8 @@ cluster:
       false_value: disabled
       editable: true
       path: "metadata.labels.'sveltos.argus.rpcu.io/oidc-rbac'"
+      visible_groups:
+        - kube-admin
     openstack:
       label: "Openstack Integration"
       description: "Enable Service Type LB using Octavia and CSI using Cinder"

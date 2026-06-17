@@ -692,6 +692,12 @@ func (s *Server) handleGetClusterParameters(c *gin.Context) {
 	templateStr := viper.GetString("cluster.template")
 	params := cluster.DiscoverParameters(templateStr)
 
+	// ?all=true returns every parameter regardless of visible_groups. Used by
+	// the "More details" read-only panel which must always show every value.
+	if c.Query("all") != "true" {
+		params = cluster.FilterParametersByGroups(params, user.Groups)
+	}
+
 	slog.Debug("Serving cluster parameters", "username", user.Username, "param_count", len(params))
 	c.JSON(http.StatusOK, params)
 }
@@ -705,8 +711,15 @@ func (s *Server) handleGetEditableFields(c *gin.Context) {
 
 	fields := cluster.GetEditableFields(viper.GetString("cluster.template"))
 
-	slog.Debug("Serving editable cluster fields", "username", user.Username, "field_count", len(fields))
-	c.JSON(http.StatusOK, fields)
+	var filtered []cluster.EditableField
+	for _, f := range fields {
+		if cluster.UserCanEditField(f.VisibleGroups, user.Groups) {
+			filtered = append(filtered, f)
+		}
+	}
+
+	slog.Debug("Serving editable cluster fields", "username", user.Username, "field_count", len(filtered))
+	c.JSON(http.StatusOK, filtered)
 }
 
 func (s *Server) handleGetWorkerGroupFields(c *gin.Context) {
@@ -717,6 +730,7 @@ func (s *Server) handleGetWorkerGroupFields(c *gin.Context) {
 	}
 
 	fields := cluster.LoadWorkerGroupFields()
+	fields = cluster.FilterWorkerGroupFieldsByGroups(fields, user.Groups)
 	slog.Debug("Serving worker group fields", "username", user.Username, "field_count", len(fields))
 	c.JSON(http.StatusOK, gin.H{"fields": fields})
 }
@@ -1276,6 +1290,11 @@ func (s *Server) fieldEditable(c *gin.Context, user *auth.UserInfo, field string
 	if !ok || !f.Enabled {
 		slog.Warn("Edit blocked: field is not editable in config", "username", user.Username, "field", field)
 		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("editing %q is disabled", field)})
+		return false
+	}
+	if !cluster.UserCanEditField(f.VisibleGroups, user.Groups) {
+		slog.Warn("Edit blocked: user not in visible_groups", "username", user.Username, "field", field, "user_groups", user.Groups, "visible_groups", f.VisibleGroups)
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("editing %q is not permitted for your groups", field)})
 		return false
 	}
 	return true

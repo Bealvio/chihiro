@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Bealvio/chihiro/internal/auth"
 	"github.com/spf13/viper"
 )
 
@@ -57,23 +58,29 @@ type TemplateParameter struct {
 	// node-image select can imply the cluster version from the chosen option's
 	// versions list, keeping version and image coherent in both directions.
 	Implies []ImpliedField `json:"implies,omitempty"`
+	// VisibleGroups restricts which OIDC groups can see this parameter in the
+	// create form and which groups can edit it. When empty, the parameter is
+	// visible/editable to all authenticated users (subject to the Editable
+	// flag). The value is always shown in the "More details" read-only section.
+	VisibleGroups []string `json:"visibleGroups,omitempty"`
 }
 
 type parameterConfig struct {
-	Label       string      `mapstructure:"label"`
-	Description string      `mapstructure:"description"`
-	Default     string      `mapstructure:"default"`
-	Type        string      `mapstructure:"type"`
-	Options     interface{} `mapstructure:"options"`
-	Required    bool        `mapstructure:"required"`
-	Editable    bool        `mapstructure:"editable"`
-	Min         *int        `mapstructure:"min"`
-	Max         *int        `mapstructure:"max"`
-	TrueValue   string      `mapstructure:"true_value"`
-	FalseValue  string      `mapstructure:"false_value"`
-	Path        string      `mapstructure:"path"`
-	RecomputeOn []string    `mapstructure:"recompute_on"`
-	Implies     interface{} `mapstructure:"implies"`
+	Label         string      `mapstructure:"label"`
+	Description   string      `mapstructure:"description"`
+	Default       string      `mapstructure:"default"`
+	Type          string      `mapstructure:"type"`
+	Options       interface{} `mapstructure:"options"`
+	Required      bool        `mapstructure:"required"`
+	Editable      bool        `mapstructure:"editable"`
+	Min           *int        `mapstructure:"min"`
+	Max           *int        `mapstructure:"max"`
+	TrueValue     string      `mapstructure:"true_value"`
+	FalseValue    string      `mapstructure:"false_value"`
+	Path          string      `mapstructure:"path"`
+	RecomputeOn   []string    `mapstructure:"recompute_on"`
+	Implies       interface{} `mapstructure:"implies"`
+	VisibleGroups []string    `mapstructure:"visible_groups"`
 }
 
 func DiscoverParameters(templateStr string) []TemplateParameter {
@@ -137,6 +144,7 @@ func DiscoverParameters(templateStr string) []TemplateParameter {
 			p.Path = cfg.Path
 			p.RecomputeOn = cfg.RecomputeOn
 			p.Implies = normalizeImplies(cfg.Implies)
+			p.VisibleGroups = cfg.VisibleGroups
 			if p.Type == "boolean" {
 				p.TrueValue, p.FalseValue = boolValueStrings(cfg)
 				// For booleans the default is the on/off state ("true"/"false"),
@@ -220,20 +228,21 @@ func loadParameterConfig() map[string]parameterConfig {
 		}
 
 		cfg := parameterConfig{
-			Label:       getString(fields, "label"),
-			Description: getString(fields, "description"),
-			Default:     getScalarString(fields, "default"),
-			Type:        getString(fields, "type"),
-			Required:    getBool(fields, "required"),
-			Options:     fields["options"],
-			Editable:    getBool(fields, "editable"),
-			Min:         getIntPtr(fields, "min"),
-			Max:         getIntPtr(fields, "max"),
-			TrueValue:   getScalarString(fields, "true_value"),
-			FalseValue:  getScalarString(fields, "false_value"),
-			Path:        getString(fields, "path"),
-			RecomputeOn: getStringSlice(fields, "recompute_on"),
-			Implies:     fields["implies"],
+			Label:         getString(fields, "label"),
+			Description:   getString(fields, "description"),
+			Default:       getScalarString(fields, "default"),
+			Type:          getString(fields, "type"),
+			Required:      getBool(fields, "required"),
+			Options:       fields["options"],
+			Editable:      getBool(fields, "editable"),
+			Min:           getIntPtr(fields, "min"),
+			Max:           getIntPtr(fields, "max"),
+			TrueValue:     getScalarString(fields, "true_value"),
+			FalseValue:    getScalarString(fields, "false_value"),
+			Path:          getString(fields, "path"),
+			RecomputeOn:   getStringSlice(fields, "recompute_on"),
+			Implies:       fields["implies"],
+			VisibleGroups: getStringSlice(fields, "visible_groups"),
 		}
 		result[key] = cfg
 	}
@@ -458,4 +467,22 @@ func humanizeKey(key string) string {
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")
+}
+
+// FilterParametersByGroups returns only the parameters whose VisibleGroups
+// setting permits the given user groups. A parameter with an empty
+// VisibleGroups list is visible to everyone. Admins (users in the
+// cluster.admin_groups) always see all parameters.
+func FilterParametersByGroups(params []TemplateParameter, userGroups []string) []TemplateParameter {
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	if auth.CheckUserGroups(userGroups, adminGroups) {
+		return params
+	}
+	var filtered []TemplateParameter
+	for _, p := range params {
+		if len(p.VisibleGroups) == 0 || auth.CheckUserGroups(userGroups, p.VisibleGroups) {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
 }

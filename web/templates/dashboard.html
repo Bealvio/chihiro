@@ -881,6 +881,7 @@
         let deleteClusterData = null;
         let editClusterData = null;
         let clusterParameters = [];
+        let allClusterParameters = []; // all parameters (unfiltered, for "More details" read-only)
         let editableFields = {}; // key -> { enabled, min, max } from /api/cluster/editable
         let workerGroupFields = []; // config-driven worker-group form schema from /api/cluster/worker-group-fields
 
@@ -1078,7 +1079,7 @@
         // Build the human label for a parameter key from the discovered
         // parameter metadata, falling back to a humanized key.
         function parameterLabel(key) {
-            const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+            const meta = (allClusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
             if (meta && meta.label) return meta.label;
             return key
                 .replace(/[_-]/g, ' ')
@@ -1110,8 +1111,10 @@
             const params = Object.assign({}, cluster.parameters || {});
             // Merge boolean parameters whose values live in cluster labels
             // (not in the chihiro.io/parameters annotation) so they show in
-            // the "More details" section.
-            (clusterParameters || []).forEach(p => {
+            // the "More details" section. Use allClusterParameters so every
+            // parameter is always visible in the read-only panel, even when
+            // the user lacks the group needed to edit it.
+            (allClusterParameters || []).forEach(p => {
                 if (p.type === 'boolean' && p.key) {
                     const keyLower = p.key.toLowerCase();
                     const exists = Object.keys(params).some(k => k.toLowerCase() === keyLower);
@@ -1133,11 +1136,11 @@
                 }
             });
             // Only show parameters that are declared in config
-            // (clusterParameters). Entries present on the cluster but not in the
+            // (allClusterParameters). Entries present on the cluster but not in the
             // current config — e.g. addon labels/params like openstack-ccm or
             // openstack-cinder-csi that are not part of cluster.parameters — are
             // ignored and never displayed.
-            const declaredKeys = new Set((clusterParameters || [])
+            const declaredKeys = new Set((allClusterParameters || [])
                 .filter(p => p.key)
                 .map(p => p.key.toLowerCase()));
             const keys = Object.keys(params)
@@ -1153,7 +1156,7 @@
             const boolKeys = [];
             const otherKeys = [];
             keys.forEach(key => {
-                const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+                const meta = (allClusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
                 const rawVal = String(params[key]).toLowerCase();
                 const matchesTrueValue = meta && meta.trueValue && String(params[key]) === meta.trueValue;
                 if ((meta && meta.type === 'boolean') || rawVal === 'true' || rawVal === 'false' || matchesTrueValue) {
@@ -1164,7 +1167,7 @@
             });
 
             const boolChips = boolKeys.map(key => {
-                const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+                const meta = (allClusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
                 const editable = canEditField(cluster, key);
                 const on = meta
                     ? (params[key] === 'true' || params[key] === meta.trueValue)
@@ -2018,7 +2021,7 @@
 
         function openEditParameterModal(name, namespace, key) {
             const cluster = currentClustersList.find(c => c.name === name && c.namespace === namespace);
-            const meta = (clusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
+            const meta = (allClusterParameters || []).find(p => p.key && p.key.toLowerCase() === key.toLowerCase());
             const editMeta = editableFields[key.toLowerCase()] || {};
             const type = (meta && meta.type) || editMeta.type || 'string';
             // Resolve the current value. The chihiro.io/parameters annotation is
@@ -2109,7 +2112,7 @@
                 container.style.display = 'none';
                 return;
             }
-            const meta = (clusterParameters || []).find(
+            const meta = (allClusterParameters || []).find(
                 p => p.key && p.key.toLowerCase() === editParameterData.key.toLowerCase());
             if (!meta || meta.type !== 'select' || !Array.isArray(meta.options)) {
                 container.style.display = 'none';
@@ -2328,16 +2331,20 @@
         }
 
         function loadClusterParameters() {
-            fetch('/api/cluster/parameters', {
-                credentials: 'include'
-            })
-                .then(response => response.json())
-                .then(params => {
-                    clusterParameters = params || [];
+            // Load filtered parameters (for create form) and all parameters
+            // (for "More details" read-only display) in parallel.
+            Promise.all([
+                fetch('/api/cluster/parameters', { credentials: 'include' }).then(r => r.json()),
+                fetch('/api/cluster/parameters?all=true', { credentials: 'include' }).then(r => r.json())
+            ])
+                .then(([filtered, all]) => {
+                    clusterParameters = filtered || [];
+                    allClusterParameters = all || [];
                 })
                 .catch(error => {
                     console.error('Error loading cluster parameters:', error);
                     clusterParameters = [];
+                    allClusterParameters = [];
                 });
         }
 
