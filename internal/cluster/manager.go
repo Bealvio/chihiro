@@ -354,7 +354,18 @@ func (m *Manager) CountControlPlaneReplicas(ctx context.Context) (int32, error) 
 	return total, nil
 }
 
-func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) error {
+// buildClusterObject renders the configured cluster template with the supplied
+// request into a fully-formed unstructured Cluster object, applying the same
+// parameter resolution, built-in injection, worker-group injection and
+// label/annotation logic used when actually creating the cluster. It does NOT
+// touch the API server (no IP-range allocation that mutates state, no limit
+// validation, no create call), so it is safe to use for read-only previews as
+// well as the create path. It returns the object and the resolved namespace.
+//
+// validateLimits controls whether configured cluster limits are enforced; the
+// create path passes true, the preview path passes false so a user can preview
+// the YAML even when at the limit.
+func (m *Manager) buildClusterObject(ctx context.Context, req CreateClusterRequest, validateLimits bool) (*unstructured.Unstructured, string, error) {
 	// Normalise worker groups: if none supplied, synthesise a single default
 	// pool from the worker_group_fields schema defaults and the "nodes" field.
 	if len(req.WorkerGroups) == 0 {
@@ -394,19 +405,21 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		req.ControlPlaneReplicas = 3
 	}
 
-	// Validate cluster limits before proceeding
-	if err := m.ValidateClusterLimits(ctx, req.Nodes, req.ControlPlaneReplicas); err != nil {
-		slog.Error("Cluster creation blocked by limits", "cluster_name", req.Name, "error", err)
-		return err
+	// Validate cluster limits before proceeding (skipped for read-only previews).
+	if validateLimits {
+		if err := m.ValidateClusterLimits(ctx, req.Nodes, req.ControlPlaneReplicas); err != nil {
+			slog.Error("Cluster creation blocked by limits", "cluster_name", req.Name, "error", err)
+			return nil, "", err
+		}
 	}
 
-	slog.Debug("Starting cluster creation", "name", req.Name, "worker_groups", len(req.WorkerGroups), "total_nodes", req.Nodes, "version", req.Version)
+	slog.Debug("Building cluster object", "name", req.Name, "worker_groups", len(req.WorkerGroups), "total_nodes", req.Nodes, "version", req.Version)
 
 	// Get next available IP range
 	ipRange, err := m.GetNextAvailableIPRange(ctx)
 	if err != nil {
-		slog.Error("Failed to get IP range for cluster creation", "cluster_name", req.Name, "error", err)
-		return fmt.Errorf("failed to get IP range: %v", err)
+		slog.Error("Failed to get IP range for cluster", "cluster_name", req.Name, "error", err)
+		return nil, "", fmt.Errorf("failed to get IP range: %v", err)
 	}
 
 	// Set default groups if not provided
@@ -426,7 +439,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	templateStr := viper.GetString("cluster.template")
 	if templateStr == "" {
 		slog.Error("No cluster template configured")
-		return fmt.Errorf("cluster template not configured in config file")
+		return nil, "", fmt.Errorf("cluster template not configured in config file")
 	}
 
 	// Apply replacements to template
@@ -519,14 +532,14 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	remainingMatches := chihiroParamRegex.FindAllString(templateStr, -1)
 	if len(remainingMatches) > 0 {
 		slog.Error("Unreplaced template placeholders remain", "cluster_name", req.Name, "remaining", remainingMatches)
-		return fmt.Errorf("unresolved template parameters: %v — provide values in the form or set defaults in cluster.parameters config", remainingMatches)
+		return nil, "", fmt.Errorf("unresolved template parameters: %v — provide values in the form or set defaults in cluster.parameters config", remainingMatches)
 	}
 
 	// Parse YAML template into unstructured object
 	cluster := &unstructured.Unstructured{}
 	if err := yaml.Unmarshal([]byte(templateStr), &cluster.Object); err != nil {
 		slog.Error("Failed to parse cluster template", "error", err)
-		return fmt.Errorf("failed to parse cluster template: %v", err)
+		return nil, "", fmt.Errorf("failed to parse cluster template: %v", err)
 	}
 
 	// Inject built-in values at configured YAML paths. viper lowercases the
@@ -554,7 +567,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 	// into the topology, replacing the single placeholder from the template.
 	if err := m.injectWorkerGroups(cluster.Object, req.WorkerGroups); err != nil {
 		slog.Error("Failed to inject worker groups", "cluster_name", req.Name, "error", err)
-		return fmt.Errorf("failed to inject worker groups: %v", err)
+		return nil, "", fmt.Errorf("failed to inject worker groups: %v", err)
 	}
 
 	// Add Chihiro-specific labels and annotations on top of template
@@ -608,14 +621,44 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 		namespace = "capi-system"
 	}
 
-	_, err = m.client.Resource(gvr).Namespace(namespace).Create(ctx, cluster, metav1.CreateOptions{})
+	return cluster, namespace, nil
+}
+
+// CreateCluster renders the configured template for the request and creates the
+// resulting Cluster resource on the API server.
+func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) error {
+	cluster, namespace, err := m.buildClusterObject(ctx, req, true)
 	if err != nil {
+		return err
+	}
+
+	if _, err := m.client.Resource(m.clusterGVR).Namespace(namespace).Create(ctx, cluster, metav1.CreateOptions{}); err != nil {
 		slog.Error("Failed to create cluster resource", "cluster_name", req.Name, "namespace", namespace, "error", err)
 		return fmt.Errorf("failed to create cluster: %v", err)
 	}
 
-	slog.Info("Successfully created cluster", "name", req.Name, "namespace", namespace, "ip_range", ipRange, "nodes", req.Nodes, "control_plane_replicas", req.ControlPlaneReplicas, "version", req.Version, "groups", groups)
+	slog.Info("Successfully created cluster", "name", req.Name, "namespace", namespace, "nodes", req.Nodes, "control_plane_replicas", req.ControlPlaneReplicas, "version", req.Version)
 	return nil
+}
+
+// PreviewCluster renders the configured template for the request and returns the
+// resulting Cluster object as YAML, without touching the API server (no limit
+// validation, no create). It is used by the form's "Preview YAML" button so a
+// user can see exactly what will be applied. Note: dynamic values that are only
+// resolved at creation time (e.g. the next available IP range) are computed the
+// same way here, so the preview reflects the real applied manifest.
+func (m *Manager) PreviewCluster(ctx context.Context, req CreateClusterRequest) (string, error) {
+	cluster, _, err := m.buildClusterObject(ctx, req, false)
+	if err != nil {
+		return "", err
+	}
+
+	out, err := yaml.Marshal(cluster.Object)
+	if err != nil {
+		slog.Error("Failed to marshal cluster preview to YAML", "cluster_name", req.Name, "error", err)
+		return "", fmt.Errorf("failed to render cluster YAML: %v", err)
+	}
+	return string(out), nil
 }
 
 func (m *Manager) DeleteCluster(ctx context.Context, name, namespace string) error {

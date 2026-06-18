@@ -150,6 +150,36 @@
             background-color: rgba(63, 81, 181, 0.08);
         }
 
+        .btn-tonal {
+            height: 48px;
+            padding: 0 20px;
+            background-color: var(--md-sys-color-surface-variant, #e7e0ec);
+            color: var(--md-sys-color-primary);
+            font-size: 0.95rem;
+            letter-spacing: 0.01rem;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        .btn-tonal:hover {
+            background-color: #dcd5e8;
+        }
+
+        .yaml-preview {
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 12px 0 4px;
+            max-height: 60vh;
+            overflow: auto;
+            font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            white-space: pre;
+            tab-size: 2;
+        }
+
         .btn-small {
             height: 36px;
             padding: 0 16px;
@@ -739,9 +769,31 @@
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-text" onclick="closeCreateModal()">Cancel</button>
+                    <button type="button" class="btn btn-tonal" onclick="previewClusterYaml(this)">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">visibility</span>
+                        Preview YAML
+                    </button>
                     <button type="submit" class="btn btn-filled">Create Cluster</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Preview Cluster YAML Modal -->
+    <div class="modal-overlay" id="previewYamlModalOverlay">
+        <div class="modal modal-wide">
+            <h3>Cluster YAML Preview</h3>
+            <p style="color: var(--md-sys-color-on-surface-variant); font-size: 0.85rem;">
+                This is the manifest that will be applied. Values resolved at creation time (such as the IP range) are shown as they will be applied.
+            </p>
+            <pre id="previewYamlContent" class="yaml-preview"></pre>
+            <div class="form-actions">
+                <button type="button" class="btn btn-text" onclick="closePreviewYamlModal()">Close</button>
+                <button type="button" class="btn btn-tonal" onclick="copyPreviewYaml(this)">
+                    <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">content_copy</span>
+                    Copy
+                </button>
+            </div>
         </div>
     </div>
 
@@ -2621,9 +2673,10 @@
         }
 
         // Form submissions
-        document.getElementById('createClusterForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-
+        // collectCreateClusterPayload reads the create form into the request
+        // body shared by both the create and preview endpoints. It validates the
+        // inputs and shows an alert + returns null if anything is invalid.
+        function collectCreateClusterPayload() {
             const name = document.getElementById('clusterName').value;
             const version = document.getElementById('clusterVersion').value;
             const controlPlaneReplicas = parseInt(document.getElementById('clusterControlPlaneReplicas').value);
@@ -2640,19 +2693,19 @@
             const workerGroups = collectWorkerGroups('create');
             if (workerGroups.length === 0) {
                 alert('At least one worker group is required');
-                return;
+                return null;
             }
 
             // Validate control plane replicas
             if (controlPlaneReplicas < 1) {
                 alert('Control plane replicas must be at least 1');
-                return;
+                return null;
             }
 
             // Non-admin users must select at least one group
             if (!isAdmin && (!groups || groups.trim() === '')) {
                 alert('You must assign at least one of your groups to the cluster');
-                return;
+                return null;
             }
 
             // Collect dynamic template parameters
@@ -2677,6 +2730,64 @@
                 }
             });
 
+            return { name, version, controlPlaneReplicas, groups, workerGroups, parameters };
+        }
+
+        // previewClusterYaml renders the manifest that would be applied and shows
+        // it in a read-only modal. It does not create anything.
+        function previewClusterYaml(triggerBtn) {
+            const payload = collectCreateClusterPayload();
+            if (!payload) return;
+
+            setButtonLoading(triggerBtn, true, 'Rendering…');
+
+            fetch('/api/clusters/preview', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json().then(data => {
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to render preview');
+                }
+                return data;
+            }))
+            .then(data => {
+                document.getElementById('previewYamlContent').textContent = data.yaml || '';
+                document.getElementById('previewYamlModalOverlay').style.display = 'flex';
+            })
+            .catch(error => {
+                console.error('Error rendering preview:', error);
+                alert('Failed to render preview: ' + error.message);
+            })
+            .finally(() => {
+                setButtonLoading(triggerBtn, false);
+            });
+        }
+
+        function closePreviewYamlModal() {
+            document.getElementById('previewYamlModalOverlay').style.display = 'none';
+        }
+
+        function copyPreviewYaml(btn) {
+            const text = document.getElementById('previewYamlContent').textContent || '';
+            navigator.clipboard.writeText(text).then(() => {
+                const original = btn.innerHTML;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">check</span>Copied';
+                setTimeout(() => { btn.innerHTML = original; }, 1500);
+            }).catch(err => {
+                console.error('Failed to copy YAML:', err);
+                alert('Failed to copy to clipboard');
+            });
+        }
+
+        document.getElementById('createClusterForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const payload = collectCreateClusterPayload();
+            if (!payload) return;
+
             const submitBtn = e.submitter;
             setButtonLoading(submitBtn, true, 'Creating…');
 
@@ -2684,7 +2795,7 @@
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, version, controlPlaneReplicas, groups, workerGroups, parameters })
+                body: JSON.stringify(payload)
             })
             .then(response => {
                 if (response.ok) {

@@ -126,6 +126,7 @@ func (s *Server) setupRoutes() {
 	protected.GET("/api/config", s.handleGetConfig)
 	protected.GET("/api/clusters", s.handleAPI)
 	protected.POST("/api/clusters", s.handleCreateCluster)
+	protected.POST("/api/clusters/preview", s.handlePreviewCluster)
 	protected.DELETE("/api/clusters/:name", s.handleDeleteCluster)
 	protected.PUT("/api/clusters/:name/groups", s.handleEditClusterGroups)
 	protected.PUT("/api/clusters/:name/nodes", s.handleEditClusterNodes)
@@ -429,6 +430,82 @@ func (s *Server) handleCreateCluster(c *gin.Context) {
 	})
 
 	slog.Info("Cluster creation API response sent", "username", user.Username, "cluster_name", req.Name, "status", "created")
+}
+
+// handlePreviewCluster renders the cluster template for the supplied form values
+// and returns the resulting manifest as YAML, without creating anything. It
+// enforces the same authorization checks as cluster creation (create permission,
+// name/group validation) so previewing cannot be used to bypass them or to probe
+// the template with arbitrary input.
+func (s *Server) handlePreviewCluster(c *gin.Context) {
+	user, ok := auth.GetUserFromContext(c.Request.Context())
+	if !ok {
+		slog.Warn("Unauthorized cluster preview attempt", "remote_addr", c.ClientIP())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req cluster.CreateClusterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Error("Invalid cluster preview request body", "username", user.Username, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Validate cluster name format
+	if !clusterNameRegex.MatchString(req.Name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cluster name format. Must be lowercase alphanumeric with hyphens"})
+		return
+	}
+
+	// Validate group name format
+	if bad := validateGroupNames(parseGroupsString(req.Groups)); bad != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group name: only letters, digits and _.:/@- are allowed"})
+		return
+	}
+
+	// Check create permission (admins can always create).
+	adminGroups := viper.GetStringSlice("cluster.admin_groups")
+	if len(adminGroups) == 0 {
+		adminGroups = []string{"cluster-admin"}
+	}
+	isAdmin := auth.CheckUserGroups(user.Groups, adminGroups)
+	if !isAdmin {
+		creatorGroups := viper.GetStringSlice("cluster.creator_groups")
+		if len(creatorGroups) == 0 {
+			creatorGroups = adminGroups
+		}
+		if !auth.CheckUserGroups(user.Groups, creatorGroups) {
+			slog.Warn("User attempted to preview cluster without create permission", "username", user.Username, "user_groups", user.Groups)
+			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to create clusters"})
+			return
+		}
+
+		// Non-admins can only assign groups they belong to.
+		requestedGroups := parseGroupsString(req.Groups)
+		userGroupMap := make(map[string]bool, len(user.Groups))
+		for _, g := range user.Groups {
+			userGroupMap[g] = true
+		}
+		for _, g := range requestedGroups {
+			if !userGroupMap[g] {
+				c.JSON(http.StatusForbidden, gin.H{"error": "You can only assign groups you belong to"})
+				return
+			}
+		}
+	}
+
+	req.Creator = user.Username
+
+	yamlOut, err := s.manager.PreviewCluster(c.Request.Context(), req)
+	if err != nil {
+		slog.Error("Failed to render cluster preview", "username", user.Username, "cluster_name", req.Name, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	slog.Debug("Served cluster YAML preview", "username", user.Username, "cluster_name", req.Name)
+	c.JSON(http.StatusOK, gin.H{"yaml": yamlOut})
 }
 
 func (s *Server) handleDeleteCluster(c *gin.Context) {
