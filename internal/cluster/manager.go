@@ -183,8 +183,8 @@ func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
 							if name, ok := varMap["name"].(string); ok && name == "ipv4Config" {
 								if value, ok := varMap["value"].(map[string]interface{}); ok {
 									if addresses, ok := value["addresses"].([]interface{}); ok && len(addresses) > 0 {
-											if addr, ok := addresses[0].(string); ok {
-												if rangeNum := extractRangeNumber(addr); rangeNum != -1 {
+										if addr, ok := addresses[0].(string); ok {
+											if rangeNum := extractRangeNumber(addr); rangeNum != -1 {
 												usedRanges[rangeNum] = true
 												slog.Debug("Found used IP range", "range_number", rangeNum, "address", addr)
 											}
@@ -1102,9 +1102,9 @@ func (m *Manager) UpdateClusterVersion(ctx context.Context, clusterName, namespa
 	}
 
 	// Recompute any parameters that depend on the version — either via
-	// recompute_on or auto-detected version-constrained options — and write
-	// them in the same update so dependent fields such as the node image name
-	// stay consistent with the new version.
+	// recompute_on or auto-detected from options that constrain the version
+	// field — and write them in the same update so dependent fields such as the
+	// node image name stay consistent with the new version.
 	applyRecomputedDependents(cluster, map[string]string{"version": version})
 
 	_, err = m.client.Resource(gvr).Namespace(namespace).Update(ctx, cluster, metav1.UpdateOptions{})

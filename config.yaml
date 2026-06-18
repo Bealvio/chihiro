@@ -1,23 +1,16 @@
-# Chihiro Configuration
-# All values can be overridden with environment variables using the CHIHIRO_ prefix
-# Example: oidc.issuer_url can be set with CHIHIRO_OIDC_ISSUER_URL
+docs_url: "https://docs.rpcu.io/"
 
-docs_url: "https://docs.rpcu.io/" # CHIHIRO_DOCS_URL
-
-host: "0.0.0.0" # CHIHIRO_HOST
-port: 8080 # CHIHIRO_PORT
+host: "0.0.0.0"
+port: 8080
 
 oidc:
-  issuer_url: "https://rpcu-gabeck.eu1.zitadel.cloud" # CHIHIRO_OIDC_ISSUER_URL
-  client_id: "377008652088841031" # CHIHIRO_OIDC_CLIENT_ID
-  # client_secret: ''                                  # CHIHIRO_OIDC_CLIENT_SECRET (use env var)
-  # session_key: ''                                    # CHIHIRO_SESSION_KEY (use env var)
-  redirect_url: "http://localhost:8080/auth/callback" # CHIHIRO_OIDC_REDIRECT_URL
+  issuer_url: "https://rpcu-gabeck.eu1.zitadel.cloud"
+  client_id: "377008652088841031"
+  redirect_url: "http://localhost:8080/auth/callback"
 
 redis:
-  addr: "127.0.0.1:6379" # CHIHIRO_REDIS_ADDR
+  addr: "127.0.0.1:6379"
   username: ""
-  # password: ''                                          # CHIHIRO_REDIS_PASSWORD (use env var)
   session_ttl: 7200
 
 cluster:
@@ -34,30 +27,6 @@ cluster:
     max_clusters: 5
     max_total_nodes: 10
     max_total_cp: 9
-  # visible_groups restricts which OIDC groups can see/edit a parameter or field.
-  # When omitted or empty, the parameter is visible/editable to all authenticated
-  # users (subject to the editable flag). Admins (in admin_groups) always see and
-  # can edit everything. The parameter value is always visible in the read-only
-  # "More details" panel regardless of group membership.
-  #
-  # Applies to: cluster.parameters, cluster.injections, cluster.worker_group_fields
-  # Per-worker-group form fields shown in the create/edit UI. Each entry only
-  # describes one input; WHERE its value lands in the CAPI machineDeployment is
-  # decided entirely by worker_group_template below. This keeps the two
-  # concerns separate: fields = what the user types, template = the YAML shape.
-  #
-  # Per-field keys:
-  #   label:    UI label (defaults to a humanized key)
-  #   type:     input type — "string" | "number" | "select"
-  #   options:  allowed values when type is "select" (list of strings)
-  #   default:  pre-filled value in the form
-  #   required: when true, the field must be non-empty (default false)
-  #   min/max:  numeric bounds when type is "number"
-  #   order:    integer controlling left-to-right display order (lower first;
-  #             ties broken alphabetically by key)
-  #
-  # Add a new field by adding an entry here and referencing it in the template
-  # as {{ chihiro.field.<key> }}.
   worker_group_fields:
     name:
       label: "Group name"
@@ -89,18 +58,6 @@ cluster:
       min: 1
       max: 10
       order: 3
-  # YAML template for ONE machineDeployment entry. It is rendered once per
-  # worker group and appended to spec.topology.workers.machineDeployments.
-  #
-  # Placeholders:
-  #   {{ chihiro.field.<key> }}  -> the value the user entered for that field
-  #                                 (numbers are emitted unquoted)
-  #   {{ chihiro.* }}            -> the same built-ins available in the cluster
-  #                                 template (name, version, ...)
-  #
-  # This is the only place that knows your ClusterClass shape: to drop the
-  # ClusterClass patch, just remove the variables.overrides block; to expose a
-  # new variable, add it here and a matching field above.
   worker_group_template: |
     name: {{ chihiro.field.name }}
     class: {{ chihiro.field.class }}
@@ -109,10 +66,6 @@ cluster:
       overrides:
         - name: workerFlavor
           value: {{ chihiro.field.flavor }}
-  # Built-in cluster fields injected at the given YAML path after the template
-  # is parsed. Set editable: true to expose a post-creation edit button in the
-  # UI and allow the matching API to accept changes; min/max bound numeric
-  # fields. label is shown in the UI.
   injections:
     name:
       path: metadata.name
@@ -122,8 +75,6 @@ cluster:
       editable: true
     serviceDomain:
       path: spec.clusterNetwork.serviceDomain
-    # groups has no YAML path (stored as a Chihiro annotation), but can still be
-    # marked editable to expose the access-groups edit button.
     groups:
       label: "Access Groups"
       editable: true
@@ -137,9 +88,6 @@ cluster:
       editable: true
       min: 1
       max: 9
-      # Only kube-admins can edit control plane replicas after creation.
-      # visible_groups:
-      #   - kube-admin
   template: |
     apiVersion: cluster.x-k8s.io/v1beta2
     kind: Cluster
@@ -199,15 +147,13 @@ cluster:
       options:
         - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
           label: "25.11"
-          versions: ["v1.35.4"]
+          constrain:
+            version: ["v1.35.4"]
         - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
           label: "26.05"
-          versions: ["v1.36.1"]
+          constrain:
+            version: ["v1.36.1"]
       default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
-      # The node image embeds the Kubernetes version and is version-constrained
-      # via the per-option `versions` lists above. The version dependency is
-      # auto-detected from the option metadata — no explicit recompute_on or
-      # implies config is needed.
       editable: true
       path: "spec.topology.variables[2].value"
     managedSubnetCIDR:
@@ -215,11 +161,6 @@ cluster:
       description: "CIDR block for the managed subnet"
       type: string
       default: "192.168.1.0/24"
-    # Boolean (checkbox) addon toggles. Rendered as on/off tickboxes; the
-    # configured true_value/false_value strings are substituted into the
-    # template at {{ chihiro.<key> }}. Setting editable + path lets the toggle
-    # be flipped after creation (the value is written to that YAML path on the
-    # live Cluster). Label keys contain dots, so single-quote that path segment.
     cilium:
       label: "Cilium CNI"
       description: "Enable the Cilium addon via Sveltos"
@@ -229,8 +170,6 @@ cluster:
       false_value: disabled
       editable: true
       path: "metadata.labels.'sveltos.argus.rpcu.io/cilium'"
-      # Only users in these groups can toggle this parameter after creation.
-      # visible_groups: []
     oidcRbac:
       label: "OIDC RBAC"
       description: "Enable OIDC RBAC addon via Sveltos"

@@ -71,12 +71,15 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 		}
 		// A parameter is recomputed when:
 		//   1. It declares recompute_on listing a changed field, OR
-		//   2. It is a select with version-constrained options and the
-		//      version field changed (auto-detected dependency).
+		//   2. It is a select whose options constrain a field that changed
+		//      (auto-detected dependency from the constraint metadata).
 		matched := len(cfg.RecomputeOn) > 0 && dependsOnAny(cfg.RecomputeOn, changedLower)
-		if !matched && cfg.Type == "select" && hasVersionConstrainedOptions(cfg) {
-			if _, ok := changedLower["version"]; ok {
-				matched = true
+		if !matched && cfg.Type == "select" {
+			for _, field := range constrainedFields(cfg) {
+				if _, ok := changedLower[field]; ok {
+					matched = true
+					break
+				}
 			}
 		}
 		if !matched {
@@ -84,8 +87,8 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 		}
 
 		// Determine the candidate value to (re-)resolve. For select parameters
-		// with version-constrained options, pick the option compatible with the
-		// changed value (when one of the triggers is a version-like field).
+		// with constrained options, pick the option compatible with the changed
+		// field values.
 		candidate := pickParameterCandidate(cfg, existing[strings.ToLower(key)], tokens)
 		if candidate == "" {
 			continue
@@ -109,11 +112,12 @@ func recomputeDependents(changed, existing map[string]string) []recomputedParame
 
 // impliedFieldValues returns the field values implied by editing the parameter
 // identified by key to rawState. This is the reverse direction of recompute:
-// for a select parameter with version-constrained options, the selected
-// option's versions list determines the value of another field (e.g. the cluster
+// for a select parameter with constrained options, any field that the selected
+// option pins to a single value is pushed back to that field (e.g. selecting a
+// node image that is valid for exactly one Kubernetes version implies that
 // version). No explicit "implies" config is needed — the relationship is
-// inferred from the option metadata. Returns a map of lowercased field name ->
-// value.
+// inferred from the option's constrain metadata. Returns a map of lowercased
+// field name -> value.
 func impliedFieldValues(key, rawState string) map[string]string {
 	cfg, ok := loadParameterConfig()[strings.ToLower(key)]
 	if !ok {
@@ -124,18 +128,24 @@ func impliedFieldValues(key, rawState string) map[string]string {
 	}
 
 	opts := normalizeOptions(cfg.Options)
-	if !hasVersionConstrainedOptions(cfg) {
-		return nil
-	}
-
 	selected := selectedOption(opts, rawState)
-	if selected == nil || len(selected.Versions) == 0 {
+	if selected == nil || len(selected.Constrain) == 0 {
 		return nil
 	}
 
-	// The first compatible version in the selected option's list is the
-	// implied version value.
-	return map[string]string{"version": selected.Versions[0]}
+	// A constraint that pins a field to exactly one allowed value implies that
+	// value for the field. Fields with multiple allowed values are ambiguous
+	// and left untouched.
+	out := make(map[string]string)
+	for field, vals := range selected.Constrain {
+		if len(vals) == 1 {
+			out[strings.ToLower(field)] = vals[0]
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // selectedOption returns the option matching rawState, comparing both the raw
@@ -262,24 +272,32 @@ func dependsOnAny(deps []string, changedLower map[string]string) bool {
 	return false
 }
 
-// hasVersionConstrainedOptions reports whether a parameter config is a select
-// whose options declare version constraints (non-empty versions lists). This
-// is used to auto-detect the version dependency without explicit config.
-func hasVersionConstrainedOptions(cfg parameterConfig) bool {
+// constrainedFields returns the sorted, de-duplicated set of lowercased field
+// names that any of the parameter's options constrain. Used to auto-detect
+// dependencies without explicit recompute_on config.
+func constrainedFields(cfg parameterConfig) []string {
+	seen := make(map[string]bool)
 	for _, opt := range normalizeOptions(cfg.Options) {
-		if len(opt.Versions) > 0 {
-			return true
+		for field := range opt.Constrain {
+			seen[strings.ToLower(field)] = true
 		}
 	}
-	return false
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for field := range seen {
+		out = append(out, field)
+	}
+	return out
 }
 
 // pickParameterCandidate returns the raw (still-templated) value to resolve for
-// a dependent parameter. For select parameters whose options declare compatible
-// versions, it prefers the option compatible with the new version (drawn from
-// the changed tokens). If the currently stored option is still compatible, it
-// is kept (only the embedded tokens are re-resolved). Falls back to the current
-// stored value, then the parameter default.
+// a dependent parameter. For select parameters whose options declare
+// constraints, it prefers the option compatible with the changed field values
+// (drawn from the token table). If the currently stored option is still
+// compatible, it is kept (only the embedded tokens are re-resolved). Falls back
+// to the current stored value, then the parameter default.
 func pickParameterCandidate(cfg parameterConfig, current string, tokens map[string]string) string {
 	opts := normalizeOptions(cfg.Options)
 
@@ -292,51 +310,53 @@ func pickParameterCandidate(cfg parameterConfig, current string, tokens map[stri
 		return cfg.Default
 	}
 
-	// Identify a version trigger value if present so we can honour the per-
-	// option `versions` compatibility lists.
-	newVersion := tokens["version"]
-
 	// If the current value matches an option that is still compatible with the
-	// new version, keep that option (its raw, pre-resolution form).
+	// changed field values, keep that option (its raw, pre-resolution form).
 	if current != "" {
 		for _, o := range opts {
-			if rawValuesEqual(o.Value, current, tokens) && optionCompatible(o, newVersion) {
+			if rawValuesEqual(o.Value, current, tokens) && optionCompatible(o, tokens) {
 				return o.Value
 			}
 		}
 	}
 
-	// Otherwise choose the first option compatible with the new version.
-	if newVersion != "" {
-		for _, o := range opts {
-			if optionCompatible(o, newVersion) {
-				return o.Value
-			}
+	// Otherwise choose the first option compatible with the changed values.
+	for _, o := range opts {
+		if optionCompatible(o, tokens) {
+			return o.Value
 		}
 	}
 
-	// No version constraint matched: keep current if set, else default.
+	// No compatible option: keep current if set, else default.
 	if current != "" {
 		return current
 	}
 	return cfg.Default
 }
 
-// optionCompatible reports whether an option is usable for the given version.
-// Options without a versions list are considered compatible with everything.
-func optionCompatible(o OptionItem, version string) bool {
-	if len(o.Versions) == 0 {
-		return true
-	}
-	if version == "" {
-		return false
-	}
-	for _, v := range o.Versions {
-		if strings.EqualFold(strings.TrimSpace(v), version) {
-			return true
+// optionCompatible reports whether an option is usable given the current field
+// values in tokens. Every field the option constrains must currently hold one
+// of the option's allowed values for that field. An option with no constraints
+// is compatible with everything; a constrained field absent from tokens makes
+// the option incompatible.
+func optionCompatible(o OptionItem, tokens map[string]string) bool {
+	for field, allowed := range o.Constrain {
+		current, ok := tokens[strings.ToLower(field)]
+		if !ok || current == "" {
+			return false
+		}
+		match := false
+		for _, v := range allowed {
+			if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(current)) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // rawValuesEqual compares an option's raw (templated) value against a stored

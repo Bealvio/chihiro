@@ -13,11 +13,15 @@ var chihiroParamRegex = regexp.MustCompile(`\{\{\s*chihiro\.(\w+)\s*\}\}`)
 
 // OptionItem describes one choice in a select parameter. Options may be plain
 // strings (backward-compatible) or structured objects with a display label and
-// an optional list of compatible Kubernetes versions.
+// an optional set of constraints. Constrain maps another field's name (a
+// built-in injection or another parameter, case-insensitive) to the list of
+// that field's values for which this option is valid. An option is only usable
+// when every constrained field currently holds one of the listed values. This
+// is fully generic: any select parameter can be constrained to any other field.
 type OptionItem struct {
-	Value    string   `json:"value"`
-	Label    string   `json:"label,omitempty"`
-	Versions []string `json:"versions,omitempty"`
+	Value     string              `json:"value"`
+	Label     string              `json:"label,omitempty"`
+	Constrain map[string][]string `json:"constrain,omitempty"`
 }
 
 // ImpliedField declares that editing a parameter should also set another field
@@ -54,9 +58,9 @@ type TemplateParameter struct {
 	// recomputed value can be written to the live object.
 	RecomputeOn []string `json:"recomputeOn,omitempty"`
 	// Implies declares fields that this parameter sets when it is edited, based
-	// on the selected option's metadata (the reverse of RecomputeOn). E.g. a
-	// node-image select can imply the cluster version from the chosen option's
-	// versions list, keeping version and image coherent in both directions.
+	// on the selected option's metadata (the reverse of RecomputeOn). When a
+	// selected option constrains a field to a single value, that value is
+	// pushed back to the field, keeping the two coherent in both directions.
 	Implies []ImpliedField `json:"implies,omitempty"`
 	// VisibleGroups restricts which OIDC groups can see this parameter in the
 	// create form and which groups can edit it. When empty, the parameter is
@@ -409,13 +413,15 @@ func normalizeOptions(raw interface{}) []OptionItem {
 				Value: getString(v, "value"),
 				Label: getString(v, "label"),
 			}
-			// versions is an optional string slice.
-			if rawVersions, ok := v["versions"]; ok {
-				if arr2, ok := rawVersions.([]interface{}); ok {
-					for _, rv := range arr2 {
-						if s, ok := rv.(string); ok {
-							oi.Versions = append(oi.Versions, s)
+			// constrain is an optional map of field name -> allowed values.
+			if rawConstrain, ok := v["constrain"].(map[string]interface{}); ok {
+				for field, rawVals := range rawConstrain {
+					vals := normalizeConstraintValues(rawVals)
+					if len(vals) > 0 {
+						if oi.Constrain == nil {
+							oi.Constrain = make(map[string][]string)
 						}
+						oi.Constrain[strings.ToLower(field)] = vals
 					}
 				}
 			}
@@ -428,6 +434,45 @@ func normalizeOptions(raw interface{}) []OptionItem {
 		}
 	}
 	return out
+}
+
+// normalizeConstraintValues converts a raw constraint value list (which may
+// contain strings, numbers, or bools in YAML) into a string slice. A single
+// scalar (not a list) is also accepted and wrapped into a one-element slice.
+func normalizeConstraintValues(raw interface{}) []string {
+	switch t := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s := scalarToString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		if s := scalarToString(raw); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
+// scalarToString renders a YAML scalar (string/bool/int/float) as a string.
+func scalarToString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return ""
+	}
 }
 
 // normalizeImplies converts the raw implies value from config (a slice of

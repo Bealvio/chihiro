@@ -9,7 +9,7 @@ import (
 )
 
 // imageParamConfig mirrors the config.yaml node-image parameter: a select whose
-// option values embed {{ chihiro.version }} and are version-constrained. The
+// option values embed {{ chihiro.version }} and constrain the version field. The
 // version dependency is auto-detected from the option metadata.
 func imageParamConfig() map[string]interface{} {
 	return map[string]interface{}{
@@ -17,14 +17,14 @@ func imageParamConfig() map[string]interface{} {
 			"type": "select",
 			"options": []interface{}{
 				map[string]interface{}{
-					"value":    "hephaestus-kaas-25.11-{{ chihiro.version }}",
-					"label":    "25.11",
-					"versions": []interface{}{"v1.35.4"},
+					"value":     "hephaestus-kaas-25.11-{{ chihiro.version }}",
+					"label":     "25.11",
+					"constrain": map[string]interface{}{"version": []interface{}{"v1.35.4"}},
 				},
 				map[string]interface{}{
-					"value":    "hephaestus-kaas-26.05-{{ chihiro.version }}",
-					"label":    "26.05",
-					"versions": []interface{}{"v1.36.1"},
+					"value":     "hephaestus-kaas-26.05-{{ chihiro.version }}",
+					"label":     "26.05",
+					"constrain": map[string]interface{}{"version": []interface{}{"v1.36.1"}},
 				},
 			},
 			"default":  "hephaestus-kaas-26.05-{{ chihiro.version }}",
@@ -113,8 +113,8 @@ func TestRecomputeDependents_SkipsWhenNoPath(t *testing.T) {
 			"type": "select",
 			"options": []interface{}{
 				map[string]interface{}{
-					"value":    "img-{{ chihiro.version }}",
-					"versions": []interface{}{"v1.36.1"},
+					"value":     "img-{{ chihiro.version }}",
+					"constrain": map[string]interface{}{"version": []interface{}{"v1.36.1"}},
 				},
 			},
 			// no path -> cannot be written, must be skipped.
@@ -199,7 +199,7 @@ func TestImpliedFieldValues_OlderImageImpliesOlderVersion(t *testing.T) {
 func TestImpliedFieldValues_NoVersionConstraintsReturnsNil(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	// Options without versions lists → no auto-detected version dependency.
+	// Options without constraints → no auto-detected dependency.
 	viper.Set("cluster.parameters", map[string]interface{}{
 		"imageName": map[string]interface{}{
 			"type": "select",
@@ -227,6 +227,74 @@ func TestImpliedFieldValues_UnknownParamReturnsNil(t *testing.T) {
 	got := impliedFieldValues("nonexistent", "value")
 	if got != nil {
 		t.Errorf("expected nil for unknown param, got %+v", got)
+	}
+}
+
+// TestRecomputeDependents_GenericConstraintNonVersion proves the constraint
+// mechanism is generic: parameter B (driver) constrains its options to certain
+// values of parameter A (region) — not the built-in version field. Changing A
+// recomputes B to a compatible option.
+func TestRecomputeDependents_GenericConstraintNonVersion(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", map[string]interface{}{
+		"region": map[string]interface{}{
+			"type":    "select",
+			"options": []interface{}{"eu", "us"},
+			"default": "eu",
+		},
+		"driver": map[string]interface{}{
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value":     "eu-driver",
+					"constrain": map[string]interface{}{"region": []interface{}{"eu"}},
+				},
+				map[string]interface{}{
+					"value":     "us-driver",
+					"constrain": map[string]interface{}{"region": []interface{}{"us"}},
+				},
+			},
+			"editable": true,
+			"path":     "spec.topology.variables[0].value",
+		},
+	})
+	viper.Set("cluster.template", "v: {{ chihiro.driver }} r: {{ chihiro.region }}")
+
+	// Currently region=eu with eu-driver; switch region to us.
+	existing := map[string]string{"region": "eu", "driver": "eu-driver"}
+	got := recomputeDependents(map[string]string{"region": "us"}, existing)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 recomputed param, got %d (%+v)", len(got), got)
+	}
+	if got[0].Key != "driver" || got[0].WriteValue != "us-driver" {
+		t.Errorf("got %+v, want driver=us-driver", got[0])
+	}
+}
+
+// TestImpliedFieldValues_GenericConstraintImpliesField proves the reverse
+// direction is generic: selecting a driver option that pins region to a single
+// value implies that region.
+func TestImpliedFieldValues_GenericConstraintImpliesField(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+	viper.Set("cluster.parameters", map[string]interface{}{
+		"driver": map[string]interface{}{
+			"type": "select",
+			"options": []interface{}{
+				map[string]interface{}{
+					"value":     "us-driver",
+					"constrain": map[string]interface{}{"region": []interface{}{"us"}},
+				},
+			},
+			"editable": true,
+			"path":     "spec.topology.variables[0].value",
+		},
+	})
+
+	got := impliedFieldValues("driver", "us-driver")
+	if got == nil || got["region"] != "us" {
+		t.Errorf("implied = %+v, want region=us", got)
 	}
 }
 
@@ -272,9 +340,9 @@ func TestApplyImpliedFields_ImpliesTriggerRecompute(t *testing.T) {
 			"type": "select",
 			"options": []interface{}{
 				map[string]interface{}{
-					"value":    "hephaestus-kaas-26.05-{{ chihiro.version }}",
-					"label":    "26.05",
-					"versions": []interface{}{"v1.36.1"},
+					"value":     "hephaestus-kaas-26.05-{{ chihiro.version }}",
+					"label":     "26.05",
+					"constrain": map[string]interface{}{"version": []interface{}{"v1.36.1"}},
 				},
 			},
 			"default":  "hephaestus-kaas-26.05-{{ chihiro.version }}",

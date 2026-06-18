@@ -1924,10 +1924,22 @@
             });
         }
 
+        // optionConstraintValues returns the list of allowed values an option
+        // declares for the given field via its generic `constrain` map, or null
+        // when the option does not constrain that field.
+        function optionConstraintValues(o, field) {
+            if (!o || typeof o !== 'object' || !o.constrain) return null;
+            const key = Object.keys(o.constrain).find(
+                k => k.toLowerCase() === String(field).toLowerCase());
+            if (key === undefined) return null;
+            const vals = o.constrain[key];
+            return Array.isArray(vals) && vals.length > 0 ? vals : null;
+        }
+
         // versionDependentParams returns the declared parameters that will be
         // recomputed when the version changes. This includes parameters with
-        // explicit recompute_on "version" as well as select parameters with
-        // version-constrained options (auto-detected dependency).
+        // explicit recompute_on "version" as well as select parameters whose
+        // options constrain the version field (auto-detected dependency).
         function versionDependentParams() {
             return (clusterParameters || []).filter(p => {
                 // Explicit recompute_on dependency.
@@ -1935,10 +1947,9 @@
                     p.recomputeOn.some(d => String(d).toLowerCase() === 'version')) {
                     return true;
                 }
-                // Auto-detected: select with version-constrained options.
+                // Auto-detected: select with options constraining version.
                 if (p.type === 'select' && Array.isArray(p.options) &&
-                    p.options.some(o => o && typeof o === 'object' &&
-                        Array.isArray(o.versions) && o.versions.length > 0)) {
+                    p.options.some(o => optionConstraintValues(o, 'version') !== null)) {
                     return true;
                 }
                 return false;
@@ -1961,8 +1972,11 @@
             }
 
             const opts = (p.type === 'select' && Array.isArray(p.options)) ? p.options : [];
-            const compatible = (o) => !o.versions || o.versions.length === 0 ||
-                o.versions.some(v => String(v).toLowerCase() === String(newVersion).toLowerCase());
+            const compatible = (o) => {
+                const allowed = optionConstraintValues(o, 'version');
+                return !allowed ||
+                    allowed.some(v => String(v).toLowerCase() === String(newVersion).toLowerCase());
+            };
 
             let candidate;
             if (opts.length > 0) {
@@ -2071,8 +2085,8 @@
                 const sel = document.createElement('select');
                 sel.id = 'editParameterInput';
                 meta.options.forEach(opt => {
-                    // Options may be plain strings or {value,label,versions}
-                    // objects (version-constrained selects like the node image).
+                    // Options may be plain strings or {value,label,constrain}
+                    // objects (constrained selects like the node image).
                     const value = (opt && typeof opt === 'object') ? opt.value : opt;
                     const label = (opt && typeof opt === 'object') ? (opt.label || opt.value) : opt;
                     const o = document.createElement('option');
@@ -2092,7 +2106,8 @@
 
             document.getElementById('editParameterModalOverlay').style.display = 'flex';
             if (meta && meta.type === 'select' && Array.isArray(meta.options) &&
-                meta.options.some(o => o && typeof o === 'object' && Array.isArray(o.versions) && o.versions.length > 0)) {
+                meta.options.some(o => o && typeof o === 'object' && o.constrain &&
+                    Object.keys(o.constrain).length > 0)) {
                 renderParameterImpliedFields();
             }
         }
@@ -2105,7 +2120,8 @@
 
         // renderParameterImpliedFields shows, for the selected parameter value,
         // what other fields will be auto-set. For select parameters with
-        // version-constrained options, selecting an option implies a version.
+        // constrained options, selecting an option that pins a field to a single
+        // value implies that value for the field.
         function renderParameterImpliedFields() {
             const container = document.getElementById('editParameterImplied');
             if (!editParameterData || !editParameterData.key) {
@@ -2119,10 +2135,11 @@
                 return;
             }
 
-            // Auto-detect: does this parameter have version-constrained options?
-            const hasVersionConstraints = meta.options.some(o =>
-                o && typeof o === 'object' && Array.isArray(o.versions) && o.versions.length > 0);
-            if (!hasVersionConstraints) {
+            // Auto-detect: does this parameter have constrained options?
+            const hasConstraints = meta.options.some(o =>
+                o && typeof o === 'object' && o.constrain &&
+                Object.keys(o.constrain).length > 0);
+            if (!hasConstraints) {
                 container.style.display = 'none';
                 return;
             }
@@ -2134,23 +2151,33 @@
                 const v = (o && typeof o === 'object') ? o.value : o;
                 return v === rawValue;
             });
-            if (!match || !match.versions || match.versions.length === 0) {
+            if (!match || !match.constrain) {
                 container.style.display = 'none';
                 return;
             }
 
-            const version = match.versions[0];
-            const label = (editableFields && editableFields['version'])
-                ? (editableFields['version'].label || 'version')
-                : parameterLabel('version');
+            // Any field the selected option pins to exactly one value is implied.
+            const implied = Object.entries(match.constrain)
+                .filter(([, vals]) => Array.isArray(vals) && vals.length === 1)
+                .map(([field, vals]) => {
+                    const label = (editableFields && editableFields[field])
+                        ? (editableFields[field].label || field)
+                        : parameterLabel(field);
+                    return `
+                        <div class="detail-item">
+                            <div class="detail-label">${escapeHtml(label)}</div>
+                            <div class="detail-value">${escapeHtml(vals[0])}</div>
+                        </div>`;
+                });
+            if (implied.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
             container.innerHTML = `
                 <div class="detail-label" style="margin-bottom: 8px;">Will also be updated</div>
-                <div class="detail-item">
-                    <div class="detail-label">${escapeHtml(label)}</div>
-                    <div class="detail-value">${escapeHtml(version)}</div>
-                </div>
+                ${implied.join('')}
                 <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-top: 4px;">
-                    This value is set automatically to stay consistent with the selected option.
+                    These values are set automatically to stay consistent with the selected option.
                 </small>`;
             container.style.display = 'block';
         }
@@ -2400,9 +2427,9 @@
             });
         }
 
-        // filterImageDropdown greys out image options whose versions list does
-        // not include the currently selected Kubernetes version. Pass null to
-        // enable all options. Auto-selects the first compatible image if the
+        // filterImageDropdown greys out image options whose version constraint
+        // does not include the currently selected Kubernetes version. Pass null
+        // to enable all options. Auto-selects the first compatible image if the
         // current selection is no longer compatible.
         function filterImageDropdown(compatibleVersions) {
             // Find all selects that have version metadata.
@@ -2526,16 +2553,18 @@
                         if (resolved === valueToApply) option.selected = true;
                         input.appendChild(option);
                     });
-                    // When a select has options with versions, store a
-                    // resolved-value→versions lookup for version-based filtering.
-                    const hasVersions = p.options.some(o => o && typeof o === 'object' && o.versions && o.versions.length > 0);
+                    // When a select has options constraining the version field,
+                    // store a resolved-value→allowed-versions lookup for
+                    // version-based filtering of the create form.
+                    const hasVersions = p.options.some(o => optionConstraintValues(o, 'version') !== null);
                     if (hasVersions) {
                         input.setAttribute('data-has-versions', 'true');
                         const resolvedVersionMap = {};
                         p.options.forEach(opt => {
-                            if (typeof opt === 'object' && opt !== null && opt.versions) {
+                            const allowed = optionConstraintValues(opt, 'version');
+                            if (allowed) {
                                 const rv = resolveParameterValue(opt.value, builtins);
-                                resolvedVersionMap[rv] = opt.versions;
+                                resolvedVersionMap[rv] = allowed;
                             }
                         });
                         input._resolvedVersionMap = resolvedVersionMap;
