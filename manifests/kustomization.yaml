@@ -1,0 +1,12 @@
+namespace: chihiro-system
+resources:
+  - ./rbacs/rbacs.yaml
+  - ./deploy.yaml
+  - ./namespace.yaml
+  - ./svc.yaml
+  - ./configmap.yaml
+  # Uncomment the line below after creating your secret
+  # - ./secret-example.yaml
+images:
+  - name: chihiro
+    newTag: v0.0.0

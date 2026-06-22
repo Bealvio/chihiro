@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chihiro-config
+data:
+  config.yaml: |
+    oidc:
+      issuer_url: 'https://your-oidc-issuer.com'
+      client_id: 'your-client-id'
+      redirect_url: 'http://chihiro.example.com/auth/callback'
+    redis:
+      addr: 'redis:6379'
+      username: ''
+      session_ttl: 3600
+    cluster:
+      domain: 'cluster.local'
+      port: 443
+      available_versions:
+        - 'v1.36.1'
+        - 'v1.35.4'
+      admin_groups:
+        - kube-admin
+      creator_groups:
+        - kube-admin
+        - cluster-creators
+      limits:
+        max_clusters: 2
+        max_total_nodes: 2
+        max_total_cp: 9
+      injections:
+        name: metadata.name
+        version: spec.topology.version
+        serviceDomain: spec.clusterNetwork.serviceDomain
+        nodes: spec.topology.workers.machineDeployments[0].replicas
+        controlPlaneReplicas: spec.topology.controlPlane.replicas
+      template: |
+        apiVersion: cluster.x-k8s.io/v1beta1
+        kind: Cluster
+        metadata:
+          name: ignore
+          namespace: default
+          labels:
+            managed-by: chihiro
+        spec:
+          clusterNetwork:
+            pods:
+              cidrBlocks:
+                - {{ chihiro.podCIDR }}
+            serviceDomain: ignore
+            services:
+              cidrBlocks:
+                - {{ chihiro.serviceCIDR }}
+          topology:
+            class: default
+            controlPlane:
+              replicas: 0
+            version: "0.0.0"
+            workers:
+              machineDeployments:
+                - class: default-worker
+                  name: worker
+                  replicas: 0
+      parameters:
+        podCIDR:
+          label: "Pod CIDR"
+          description: "CIDR block for pod networking"
+          type: string
+          default: "172.16.0.0/16"
+        serviceCIDR:
+          label: "Service CIDR"
+          description: "CIDR block for service networking"
+          type: string
+          default: "172.17.0.0/16"
+        workerFlavor:
+          label: "Worker Flavor"
+          description: "OpenStack flavor for worker nodes"
+          type: select
+          options:
+            - xmedium
+            - medium
+            - large
+          default: xmedium
+        externalNetworkId:
+          label: "External Network ID"
+          description: "OpenStack external network UUID"
+          type: string
+        managedSubnetCIDR:
+          label: "Managed Subnet CIDR"
+          description: "CIDR block for the managed subnet"
+          type: string
+          default: "192.168.1.0/24"
+        imageName:
+          label: "Node Image"
+          description: "OpenStack image for cluster nodes"
+          type: select
+          options:
+            - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
+              label: "25.11"
+              constrain:
+                version: ["v1.35.4"]
+            - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+              label: "26.05"
+              constrain:
+                version: ["v1.36.1", "v1.35.4"]
+          default: "hephaestus-kaas-26.05-{{ chihiro.version }}"

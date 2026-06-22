@@ -1,0 +1,192 @@
+docs_url: "https://docs.rpcu.io/"
+
+host: "0.0.0.0"
+port: 8080
+
+oidc:
+  issuer_url: "https://rpcu-gabeck.eu1.zitadel.cloud"
+  client_id: "377008652088841031"
+  redirect_url: "http://localhost:8080/auth/callback"
+
+redis:
+  addr: "127.0.0.1:6379"
+  username: ""
+  session_ttl: 7200
+
+cluster:
+  domain: "mgmt.rpcu.lan"
+  port: 443
+  available_versions:
+    - "v1.36.1"
+    - "v1.35.4"
+  admin_groups:
+    - kube-admin
+  creator_groups:
+    - kube-admin
+  limits:
+    max_clusters: 5
+    max_total_nodes: 10
+    max_total_cp: 9
+  worker_group_fields:
+    name:
+      label: "Group name"
+      type: string
+      required: true
+      order: 0
+    class:
+      label: "Class"
+      type: select
+      options:
+        - default-worker
+      default: default-worker
+      order: 1
+    flavor:
+      label: "Flavor"
+      type: select
+      options:
+        - small
+        - medium
+        - xmedium
+        - large
+        - xlarge
+      default: xmedium
+      order: 2
+    replicas:
+      label: "Replicas"
+      type: number
+      default: "1"
+      min: 1
+      max: 10
+      order: 3
+  worker_group_template: |
+    name: {{ chihiro.field.name }}
+    class: {{ chihiro.field.class }}
+    replicas: {{ chihiro.field.replicas }}
+    variables:
+      overrides:
+        - name: workerFlavor
+          value: {{ chihiro.field.flavor }}
+  injections:
+    name:
+      path: metadata.name
+    version:
+      path: spec.topology.version
+      label: "Kubernetes Version"
+      editable: true
+    serviceDomain:
+      path: spec.clusterNetwork.serviceDomain
+    groups:
+      label: "Access Groups"
+      editable: true
+    workerGroups:
+      path: spec.topology.workers.machineDeployments
+      label: "Worker Groups"
+      editable: true
+    controlPlaneReplicas:
+      path: spec.topology.controlPlane.replicas
+      label: "Control Plane Replicas"
+      editable: true
+      min: 1
+      max: 9
+  template: |
+    apiVersion: cluster.x-k8s.io/v1beta2
+    kind: Cluster
+    metadata:
+      namespace: mgmt
+      labels:
+        sveltos.argus.rpcu.io/openstack-integration: {{ chihiro.openstack }}
+        sveltos.argus.rpcu.io/oidc-rbac: {{ chihiro.oidcRbac }}
+        sveltos.argus.rpcu.io/cilium: {{ chihiro.cilium }}
+        type: workload
+    spec:
+      clusterNetwork:
+        pods:
+          cidrBlocks:
+            - {{ chihiro.podCIDR }}
+        serviceDomain: ignore
+        services:
+          cidrBlocks:
+            - {{ chihiro.serviceCIDR }}
+      topology:
+        classRef:
+          name: openstack-kamaji
+        controlPlane:
+          replicas: 0
+        variables:
+          - name: identityRef
+            value:
+              name: mgmt-cloud-config
+              cloudName: openstack
+          - name: externalNetworkId
+            value: 1cfd69da-057c-4748-a0d4-de5b0ca77db2
+          - name: imageName
+            value: {{ chihiro.imageName }}
+          - name: oidc
+            value:
+              enabled: true
+              issuerURL: https://rpcu-gabeck.eu1.zitadel.cloud
+              clientID: "377050089077613929"
+          - name: managedSubnetCIDR
+            value: {{ chihiro.managedSubnetCIDR }}
+        version: "0.0.0"
+  parameters:
+    podCIDR:
+      label: "Pod CIDR"
+      description: "CIDR block for pod networking"
+      type: string
+      default: "10.207.0.0/16"
+    serviceCIDR:
+      label: "Service CIDR"
+      description: "CIDR block for service networking"
+      type: string
+      default: "10.107.0.0/16"
+    imageName:
+      label: "Node Image"
+      description: "OpenStack image for cluster nodes"
+      type: select
+      options:
+        - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
+          label: "25.11"
+          constrain:
+            version: ["v1.35.4"]
+        - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+          label: "26.05"
+          constrain:
+            version: ["v1.36.1"]
+      default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+      editable: true
+      path: "spec.topology.variables[2].value"
+    managedSubnetCIDR:
+      label: "Managed Subnet CIDR"
+      description: "CIDR block for the managed subnet"
+      type: string
+      default: "192.168.1.0/24"
+    cilium:
+      label: "Cilium CNI"
+      description: "Enable the Cilium addon via Sveltos"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/cilium'"
+    oidcRbac:
+      label: "OIDC RBAC"
+      description: "Enable OIDC RBAC addon via Sveltos"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/oidc-rbac'"
+      visible_groups:
+        - kube-admin
+    openstack:
+      label: "Openstack Integration"
+      description: "Enable Service Type LB using Octavia and CSI using Cinder"
+      type: boolean
+      default: true
+      true_value: enabled
+      false_value: disabled
+      editable: true
+      path: "metadata.labels.'sveltos.argus.rpcu.io/openstack-integration'"

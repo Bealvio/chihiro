@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chihiro
+  labels:
+    app.kubernetes.io/name: chihiro
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chihiro
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chihiro
+    spec:
+      serviceAccountName: chihiro
+      containers:
+        - name: chihiro
+          args:
+            - serve
+            - --config=/config.yaml
+          command:
+            - /chihiro
+          image: chihiro:v0.0.0
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SESSION_KEY # 32 or 64 bytes random key to encrypt sessions
+              valueFrom:
+                secretKeyRef:
+                  name: chihiro-secrets
+                  key: session_key
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: chihiro-secrets
+                  key: client_secret
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: chihiro-secrets
+                  key: redis_password
+          volumeMounts:
+            - name: config
+              mountPath: /config.yaml
+              subPath: config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: chihiro-config

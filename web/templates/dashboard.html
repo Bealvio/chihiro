@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chihiro - Cluster Manager</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+    <header>
+        <div class="title">
+            <span class="material-symbols-outlined">dns</span>
+            <span>Chihiro</span>
+        </div>
+        <div class="user-info">
+            <div class="user-detail">
+                <span class="material-symbols-outlined">person</span>
+                <span id="userName">Loading...</span>
+            </div>
+            <div class="status-indicator" id="connectionStatus">
+                <span class="material-symbols-outlined">cloud_off</span>
+                <span>Disconnected</span>
+            </div>
+            <a href="#" id="docsLink" class="btn btn-text" style="display: none;" target="_blank" rel="noopener noreferrer">
+                <span class="material-symbols-outlined" style="margin-right: 4px;">description</span>
+                Documentation
+            </a>
+            <a href="/auth/logout" class="btn btn-text">Logout</a>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Stats Section -->
+        <div class="stats-grid" id="statsContainer">
+            <div class="stat-card">
+                <h3 id="totalClusters">0</h3>
+                <p>Total Clusters</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="readyClusters">0</h3>
+                <p>Ready Clusters</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="pendingClusters">0</h3>
+                <p>Pending Clusters</p>
+            </div>
+        </div>
+
+        <!-- Clusters Section -->
+        <div class="card">
+            <div class="card-title">
+                <span class="material-symbols-outlined">developer_board</span>
+                <span>Kubernetes Clusters</span>
+                <div style="margin-left: auto;">
+                    <button class="btn btn-filled" onclick="openCreateModal()">
+                        <span class="material-symbols-outlined" style="margin-right: 8px;">add</span>
+                        Create Cluster
+                    </button>
+                </div>
+            </div>
+            <div class="card-subtitle">
+                Manage your Kubernetes clusters with real-time monitoring
+            </div>
+
+            <div class="cluster-grid" id="clustersContainer">
+                <!-- Clusters will be populated here -->
+            </div>
+
+            <div class="empty-state" id="emptyState" style="display: none;">
+                <span class="material-symbols-outlined">developer_board</span>
+                <h3>No clusters found</h3>
+                <p>Create your first cluster to get started</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Create Cluster Modal -->
+    <div class="modal-overlay" id="createModalOverlay">
+        <div class="modal modal-wide">
+            <h3>Create New Cluster</h3>
+            <form id="createClusterForm">
+                <div class="form-group">
+                    <label for="clusterName">Cluster Name</label>
+                    <input type="text" id="clusterName" required>
+                </div>
+                <div class="form-group">
+                    <label for="clusterVersion">Kubernetes Version</label>
+                    <select id="clusterVersion" required>
+                        <option value="">Select version...</option>
+                    </select>
+                </div>
+                <div id="dynamicParamsContainer"></div>
+                <div class="form-group">
+                    <label>Worker Groups</label>
+                    <div id="createWorkerGroups"></div>
+                    <button type="button" class="btn btn-text btn-small" onclick="addCreateWorkerGroup()" style="margin-top: 8px;">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">add</span>
+                        Add Group
+                    </button>
+                </div>
+                <div class="form-group">
+                    <label for="clusterControlPlaneReplicas">Control Plane Replicas</label>
+                    <input type="number" id="clusterControlPlaneReplicas" min="1" value="3" required>
+                </div>
+                <small id="limitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 12px;">
+                    Loading limits...
+                </small>
+                <div class="form-group" id="groupsSection">
+                    <label for="clusterGroups">Access Groups</label>
+                    <select id="clusterGroups" multiple>
+                        <!-- Options will be populated -->
+                    </select>
+                </div>
+                <div class="form-group" id="groupsTextSection" style="display: none;">
+                    <label for="clusterGroupsText">Access Groups (comma-separated)</label>
+                    <input type="text" id="clusterGroupsText" placeholder="dev-team,platform-admin">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeCreateModal()">Cancel</button>
+                    <button type="button" class="btn btn-tonal" onclick="previewClusterYaml(this)">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">visibility</span>
+                        Preview YAML
+                    </button>
+                    <button type="submit" class="btn btn-filled">Create Cluster</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Preview Cluster YAML Modal -->
+    <div class="modal-overlay" id="previewYamlModalOverlay">
+        <div class="modal modal-wide">
+            <h3>Cluster YAML Preview</h3>
+            <p style="color: var(--md-sys-color-on-surface-variant); font-size: 0.85rem;">
+                This is the manifest that will be applied. Values resolved at creation time (such as the IP range) are shown as they will be applied.
+            </p>
+            <pre id="previewYamlContent" class="yaml-preview"></pre>
+            <div class="form-actions">
+                <button type="button" class="btn btn-text" onclick="closePreviewYamlModal()">Close</button>
+                <button type="button" class="btn btn-tonal" onclick="copyPreviewYaml(this)">
+                    <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">content_copy</span>
+                    Copy
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Groups Modal -->
+    <div class="modal-overlay" id="editGroupsModalOverlay">
+        <div class="modal">
+            <h3>Edit Cluster Groups</h3>
+            <p>Edit access groups for cluster <strong id="editClusterName"></strong></p>
+            <form id="editGroupsForm">
+                <div class="form-group" id="editGroupsSection">
+                    <label for="editClusterGroups">Access Groups</label>
+                    <select id="editClusterGroups" multiple>
+                        <!-- Options will be populated -->
+                    </select>
+                </div>
+                <div class="form-group" id="editGroupsTextSection" style="display: none;">
+                    <label for="editClusterGroupsText">Access Groups (comma-separated)</label>
+                    <input type="text" id="editClusterGroupsText" placeholder="dev-team,platform-admin">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditGroupsModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Worker Groups Modal -->
+    <div class="modal-overlay" id="editWorkerGroupsModalOverlay">
+        <div class="modal modal-wide">
+            <h3>Edit Worker Groups</h3>
+            <p>Edit worker groups for cluster <strong id="editWorkerGroupsClusterName"></strong></p>
+            <form id="editWorkerGroupsForm">
+                <div class="form-group">
+                    <label>Worker Groups</label>
+                    <div id="editWorkerGroupsList"></div>
+                    <button type="button" class="btn btn-text btn-small" onclick="addEditWorkerGroup()" style="margin-top: 8px;">
+                        <span class="material-symbols-outlined" style="font-size: 1.1rem; margin-right: 4px;">add</span>
+                        Add Group
+                    </button>
+                </div>
+                <small id="editWorkerGroupsLimitsInfo" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 12px;">
+                    Loading limits...
+                </small>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditWorkerGroupsModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Update Worker Groups</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Control Plane Modal -->
+    <div class="modal-overlay" id="editControlPlaneModalOverlay">
+        <div class="modal">
+            <h3>Edit Control Plane</h3>
+            <p>Edit control plane replicas for cluster <strong id="editControlPlaneClusterName"></strong></p>
+            <form id="editControlPlaneForm">
+                <div class="form-group">
+                    <label for="editClusterControlPlane">Control Plane Replicas</label>
+                    <input type="number" id="editClusterControlPlane" min="1" max="9" required>
+                    <small id="editControlPlaneHint" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Minimum: 1 replica
+                    </small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditControlPlaneModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Update Control Plane</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Version Modal -->
+    <div class="modal-overlay" id="editVersionModalOverlay">
+        <div class="modal">
+            <h3>Upgrade Cluster Version</h3>
+            <p>Upgrade Kubernetes version for cluster <strong id="editVersionClusterName"></strong></p>
+            <form id="editVersionForm">
+                <div class="form-group">
+                    <label for="editClusterVersion">Kubernetes Version</label>
+                    <select id="editClusterVersion" required>
+                        <option value="">Select a version to upgrade to...</option>
+                        <!-- Options will be populated with available upgrade versions -->
+                    </select>
+                    <small style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem;">
+                        Only newer versions are available for upgrade
+                    </small>
+                </div>
+                <div id="editVersionDependents" style="display: none; margin-bottom: 16px;"></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditVersionModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Upgrade Version</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Parameter Modal (generic) -->
+    <div class="modal-overlay" id="editParameterModalOverlay">
+        <div class="modal">
+            <h3 id="editParameterTitle">Edit Parameter</h3>
+            <p>Cluster <strong id="editParameterClusterName"></strong></p>
+            <form id="editParameterForm">
+                <div class="form-group" id="editParameterField"></div>
+                <small id="editParameterDescription" style="color: var(--md-sys-color-on-surface-variant); font-size: 0.8rem; display: block; margin-bottom: 16px;"></small>
+                <div id="editParameterImplied" style="display: none; margin-bottom: 16px;"></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-text" onclick="closeEditParameterModal()">Cancel</button>
+                    <button type="submit" class="btn btn-filled">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal-overlay" id="deleteModalOverlay">
+        <div class="modal">
+            <h3>Delete Cluster</h3>
+            <p>Are you sure you want to delete cluster <strong id="deleteClusterName"></strong>?</p>
+            <p style="color: var(--md-sys-color-error); font-size: 0.9rem; margin-bottom: 32px; position: relative; z-index: 2;">This action cannot be undone.</p>
+            <div style="display: flex; gap: 16px; justify-content: flex-end;">
+                <button type="button" class="btn btn-text" onclick="closeDeleteModal()">Cancel</button>
+                <button type="button" class="btn danger" onclick="confirmDelete(this)">Delete Cluster</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
