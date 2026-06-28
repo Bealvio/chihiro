@@ -56,7 +56,6 @@ var canonicalBuiltinKeys = map[string]string{
 	"version":              "version",
 	"groups":               "groups",
 	"servicedomain":        "serviceDomain",
-	"iprange":              "ipRange",
 	"nodes":                "nodes",
 	"workergroups":         "workerGroups",
 	"controlplanereplicas": "controlPlaneReplicas",

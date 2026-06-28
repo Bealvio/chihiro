@@ -159,79 +159,6 @@ func NewManager(client dynamic.Interface, clusterGVR schema.GroupVersionResource
 	}
 }
 
-func (m *Manager) GetNextAvailableIPRange(ctx context.Context) (string, error) {
-	slog.Debug("Looking for next available IP range")
-
-	gvr := m.clusterGVR
-
-	list, err := m.client.Resource(gvr).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		slog.Error("Failed to list clusters for IP range calculation", "error", err)
-		return "", fmt.Errorf("failed to list clusters: %v", err)
-	}
-
-	slog.Debug("Found clusters for IP range analysis", "cluster_count", len(list.Items))
-
-	usedRanges := make(map[int]bool)
-
-	for _, item := range list.Items {
-		if spec, ok := item.Object["spec"].(map[string]interface{}); ok {
-			if topology, ok := spec["topology"].(map[string]interface{}); ok {
-				if variables, ok := topology["variables"].([]interface{}); ok {
-					for _, variable := range variables {
-						if varMap, ok := variable.(map[string]interface{}); ok {
-							if name, ok := varMap["name"].(string); ok && name == "ipv4Config" {
-								if value, ok := varMap["value"].(map[string]interface{}); ok {
-									if addresses, ok := value["addresses"].([]interface{}); ok && len(addresses) > 0 {
-										if addr, ok := addresses[0].(string); ok {
-											if rangeNum := extractRangeNumber(addr); rangeNum != -1 {
-												usedRanges[rangeNum] = true
-												slog.Debug("Found used IP range", "range_number", rangeNum, "address", addr)
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	slog.Debug("Used IP ranges", "count", len(usedRanges), "ranges", getUsedRangeNumbers(usedRanges))
-
-	for i := 10; i <= 50; i++ {
-		if !usedRanges[i] {
-			ipRange := fmt.Sprintf("10.250.%d.0-10.250.%d.10", i, i)
-			slog.Info("Found next available IP range", "range_number", i, "ip_range", ipRange)
-			return ipRange, nil
-		}
-	}
-
-	slog.Error("No available IP ranges found", "checked_range", "10.250.10.0 to 10.250.50.0", "used_count", len(usedRanges))
-	return "", fmt.Errorf("no available IP ranges (10.250.10.0 to 10.250.50.0)")
-}
-
-func extractRangeNumber(address string) int {
-	parts := strings.Split(address, "-")
-	if len(parts) != 2 {
-		return -1
-	}
-
-	startIP := strings.Split(parts[0], ".")
-	if len(startIP) != 4 || startIP[0] != "10" || startIP[1] != "250" {
-		return -1
-	}
-
-	rangeNum, err := strconv.Atoi(startIP[2])
-	if err != nil {
-		return -1
-	}
-
-	return rangeNum
-}
-
 // ValidateClusterLimits checks if creating a new cluster would exceed configured limits
 func (m *Manager) ValidateClusterLimits(ctx context.Context, newClusterNodes, newClusterCPReplicas int32) error {
 	maxClusters := viper.GetInt("cluster.limits.max_clusters")
@@ -415,13 +342,6 @@ func (m *Manager) buildClusterObject(ctx context.Context, req CreateClusterReque
 
 	slog.Debug("Building cluster object", "name", req.Name, "worker_groups", len(req.WorkerGroups), "total_nodes", req.Nodes, "version", req.Version)
 
-	// Get next available IP range
-	ipRange, err := m.GetNextAvailableIPRange(ctx)
-	if err != nil {
-		slog.Error("Failed to get IP range for cluster", "cluster_name", req.Name, "error", err)
-		return nil, "", fmt.Errorf("failed to get IP range: %v", err)
-	}
-
 	// Set default groups if not provided
 	groups := req.Groups
 	if groups == "" {
@@ -454,7 +374,6 @@ func (m *Manager) buildClusterObject(ctx context.Context, req CreateClusterReque
 		"version":              req.Version,
 		"groups":               groups,
 		"servicedomain":        serviceDomain,
-		"iprange":              ipRange,
 		"nodes":                strconv.Itoa(int(req.Nodes)),
 		"controlplanereplicas": strconv.Itoa(int(req.ControlPlaneReplicas)),
 	}
@@ -511,7 +430,7 @@ func (m *Manager) buildClusterObject(ctx context.Context, req CreateClusterReque
 				}
 			}
 			if value == "" {
-				// Fall back to built-in tokens (name, version, nodes, ipRange, …).
+				// Fall back to built-in tokens (name, version, nodes, …).
 				value = builtinTokens[strings.ToLower(key)]
 			}
 			if value == "" {
@@ -550,7 +469,6 @@ func (m *Manager) buildClusterObject(ctx context.Context, req CreateClusterReque
 		"version":              req.Version,
 		"groups":               groups,
 		"servicedomain":        serviceDomain,
-		"iprange":              ipRange,
 		"nodes":                req.Nodes,
 		"controlplanereplicas": req.ControlPlaneReplicas,
 	}
@@ -645,7 +563,7 @@ func (m *Manager) CreateCluster(ctx context.Context, req CreateClusterRequest) e
 // resulting Cluster object as YAML, without touching the API server (no limit
 // validation, no create). It is used by the form's "Preview YAML" button so a
 // user can see exactly what will be applied. Note: dynamic values that are only
-// resolved at creation time (e.g. the next available IP range) are computed the
+// resolved at creation time are computed the
 // same way here, so the preview reflects the real applied manifest.
 func (m *Manager) PreviewCluster(ctx context.Context, req CreateClusterRequest) (string, error) {
 	cluster, _, err := m.buildClusterObject(ctx, req, false)
@@ -1158,15 +1076,6 @@ func (m *Manager) UpdateClusterVersion(ctx context.Context, clusterName, namespa
 
 	slog.Info("Successfully updated cluster version", "cluster", clusterName, "namespace", namespace, "version", version)
 	return nil
-}
-
-// Helper function to get a list of used range numbers for logging
-func getUsedRangeNumbers(usedRanges map[int]bool) []int {
-	var ranges []int
-	for rangeNum := range usedRanges {
-		ranges = append(ranges, rangeNum)
-	}
-	return ranges
 }
 
 // injectWorkerGroups replaces the machineDeployments array in the cluster

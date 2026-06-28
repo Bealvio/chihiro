@@ -223,7 +223,7 @@
         // and groups section), excluded from "More details" to avoid duplicates.
         const MORE_DETAILS_EXCLUDE = new Set([
             'podcidr', 'servicecidr', 'servicedomain',
-            'version', 'nodes', 'controlplanereplicas', 'groups', 'name', 'iprange',
+            'version', 'nodes', 'controlplanereplicas', 'groups', 'name',
         ]);
 
         // Render the collapsible "More details" section listing every parameter
