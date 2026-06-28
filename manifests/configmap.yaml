@@ -2,45 +2,59 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: chihiro-config
+  labels:
+    app.kubernetes.io/name: chihiro
+    app.kubernetes.io/part-of: chihiro
 data:
   config.yaml: |
+    host: "0.0.0.0"
+    port: 8080
+
     oidc:
-      issuer_url: 'https://your-oidc-issuer.com'
-      client_id: 'your-client-id'
-      redirect_url: 'http://chihiro.example.com/auth/callback'
+      issuer_url: "https://your-oidc-provider.example.com"
+      client_id: "your-client-id"
+      redirect_url: "http://chihiro.example.com/auth/callback"
+
     redis:
-      addr: 'redis:6379'
-      username: ''
+      addr: "redis:6379"
       session_ttl: 3600
+
     cluster:
-      domain: 'cluster.local'
+      domain: "clusters.example.com"
       port: 443
+
       available_versions:
-        - 'v1.36.1'
-        - 'v1.35.4'
+        - "v1.31.2"
+        - "v1.30.6"
+
       admin_groups:
-        - kube-admin
+        - platform-admins
+
       creator_groups:
-        - kube-admin
-        - cluster-creators
+        - platform-admins
+        - developers
+
       limits:
-        max_clusters: 2
-        max_total_nodes: 2
+        max_clusters: 10
+        max_total_nodes: 50
         max_total_cp: 9
+
       injections:
         name: metadata.name
         version: spec.topology.version
         serviceDomain: spec.clusterNetwork.serviceDomain
-        nodes: spec.topology.workers.machineDeployments[0].replicas
         controlPlaneReplicas: spec.topology.controlPlane.replicas
+        nodes: spec.topology.workers.machineDeployments[0].replicas
+
       template: |
-        apiVersion: cluster.x-k8s.io/v1beta1
+        apiVersion: cluster.x-k8s.io/v1beta2
         kind: Cluster
         metadata:
           name: ignore
           namespace: default
           labels:
             managed-by: chihiro
+            team: {{ chihiro.team }}
         spec:
           clusterNetwork:
             pods:
@@ -51,55 +65,85 @@ data:
               cidrBlocks:
                 - {{ chihiro.serviceCIDR }}
           topology:
-            class: default
-            controlPlane:
-              replicas: 0
-            version: "0.0.0"
+        class: my-infra-class
+        controlPlane:
+              replicas: {{ chihiro.controlPlaneReplicas }}
             workers:
               machineDeployments:
                 - class: default-worker
                   name: worker
-                  replicas: 0
+                  replicas: {{ chihiro.nodes }}
+            version: "0.0.0"
+
       parameters:
         podCIDR:
           label: "Pod CIDR"
           description: "CIDR block for pod networking"
           type: string
-          default: "172.16.0.0/16"
+          default: "10.244.0.0/16"
+
         serviceCIDR:
           label: "Service CIDR"
           description: "CIDR block for service networking"
           type: string
-          default: "172.17.0.0/16"
-        workerFlavor:
-          label: "Worker Flavor"
-          description: "OpenStack flavor for worker nodes"
-          type: select
-          options:
-            - xmedium
-            - medium
-            - large
-          default: xmedium
-        externalNetworkId:
-          label: "External Network ID"
-          description: "OpenStack external network UUID"
-          type: string
-        managedSubnetCIDR:
-          label: "Managed Subnet CIDR"
-          description: "CIDR block for the managed subnet"
-          type: string
-          default: "192.168.1.0/24"
+          default: "10.96.0.0/12"
+
         imageName:
           label: "Node Image"
-          description: "OpenStack image for cluster nodes"
+          description: "OS image for cluster nodes"
           type: select
+          editable: true
           options:
-            - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
-              label: "25.11"
+            - value: "ubuntu-24.04-k8s-{{ chihiro.version }}"
+              label: "Ubuntu 24.04"
               constrain:
-                version: ["v1.35.4"]
-            - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
-              label: "26.05"
+                version: ["v1.31.2", "v1.30.6"]
+            - value: "ubuntu-22.04-k8s-{{ chihiro.version }}"
+              label: "Ubuntu 22.04"
               constrain:
-                version: ["v1.36.1", "v1.35.4"]
-          default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+                version: ["v1.30.6"]
+          default: "ubuntu-24.04-k8s-{{ chihiro.version }}"
+
+        controlPlaneReplicas:
+          label: "Control Plane Replicas"
+          description: "Number of control plane nodes (odd numbers recommended)"
+          type: number
+          default: "3"
+          min: 1
+          max: 9
+          editable: true
+          path: spec.topology.controlPlane.replicas
+
+        nodes:
+          label: "Worker Nodes"
+          description: "Number of worker nodes"
+          type: number
+          default: "2"
+          min: 0
+          max: 20
+
+        enableCilium:
+          label: "Cilium CNI"
+          description: "Use Cilium as the CNI instead of the default"
+          type: boolean
+          default: true
+          true_value: "cilium"
+          false_value: "default"
+          editable: true
+          path: "metadata.labels.'example.com/cni'"
+
+        serviceDomain:
+          label: "Service Domain"
+          description: "DNS domain for cluster services"
+          type: string
+          default: "cluster.local"
+          editable: true
+          path: spec.clusterNetwork.serviceDomain
+
+        team:
+          label: "Team"
+          description: "Owning team (used as label)"
+          type: string
+          default: "platform"
+          visible_groups:
+            - platform-admins

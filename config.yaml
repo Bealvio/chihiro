@@ -1,103 +1,59 @@
-docs_url: "https://docs.rpcu.io/"
-
 host: "0.0.0.0"
 port: 8080
 
 oidc:
-  issuer_url: "https://rpcu-gabeck.eu1.zitadel.cloud"
-  client_id: "377008652088841031"
-  redirect_url: "http://localhost:8080/auth/callback"
+  issuer_url: "https://your-oidc-provider.example.com"
+  client_id: "your-client-id"
+  redirect_url: "http://chihiro.example.com/auth/callback"
 
 redis:
-  addr: "127.0.0.1:6379"
-  username: ""
-  session_ttl: 7200
+  addr: "redis:6379"
+  session_ttl: 3600
 
 cluster:
-  domain: "mgmt.rpcu.lan"
+  domain: "clusters.example.com"
   port: 443
+
+  # Kubernetes versions available for new clusters
   available_versions:
-    - "v1.36.1"
-    - "v1.35.4"
+    - "v1.31.2"
+    - "v1.30.6"
+
+  # Groups that get full admin access (all clusters, all params)
   admin_groups:
-    - kube-admin
+    - platform-admins
+
+  # Groups allowed to create clusters
   creator_groups:
-    - kube-admin
+    - platform-admins
+    - developers
+
+  # Hard limits on total cluster resources across the fleet
   limits:
-    max_clusters: 5
-    max_total_nodes: 10
+    max_clusters: 10
+    max_total_nodes: 50
     max_total_cp: 9
-  worker_group_fields:
-    name:
-      label: "Group name"
-      type: string
-      required: true
-      order: 0
-    class:
-      label: "Class"
-      type: select
-      options:
-        - default-worker
-      default: default-worker
-      order: 1
-    flavor:
-      label: "Flavor"
-      type: select
-      options:
-        - small
-        - medium
-        - xmedium
-        - large
-        - xlarge
-      default: xmedium
-      order: 2
-    replicas:
-      label: "Replicas"
-      type: number
-      default: "1"
-      min: 1
-      max: 10
-      order: 3
-  worker_group_template: |
-    name: {{ chihiro.field.name }}
-    class: {{ chihiro.field.class }}
-    replicas: {{ chihiro.field.replicas }}
-    variables:
-      overrides:
-        - name: workerFlavor
-          value: {{ chihiro.field.flavor }}
+
+  # --- Injections: built-in fields that map cluster form values to spec paths ---
   injections:
-    name:
-      path: metadata.name
-    version:
-      path: spec.topology.version
-      label: "Kubernetes Version"
-      editable: true
-    serviceDomain:
-      path: spec.clusterNetwork.serviceDomain
-    groups:
-      label: "Access Groups"
-      editable: true
-    workerGroups:
-      path: spec.topology.workers.machineDeployments
-      label: "Worker Groups"
-      editable: true
-    controlPlaneReplicas:
-      path: spec.topology.controlPlane.replicas
-      label: "Control Plane Replicas"
-      editable: true
-      min: 1
-      max: 9
+    name: metadata.name
+    version: spec.topology.version
+    serviceDomain: spec.clusterNetwork.serviceDomain
+    controlPlaneReplicas: spec.topology.controlPlane.replicas
+    nodes: spec.topology.workers.machineDeployments[0].replicas
+
+  # --- Template: the CAPI cluster object rendered on creation ---
+  # Use {{ chihiro.<key> }} placeholders for dynamic values.
+  # Built-in tokens: {{ chihiro.version }}, {{ chihiro.name }}, {{ chihiro.podCIDR }}, {{ chihiro.serviceCIDR }}
   template: |
     apiVersion: cluster.x-k8s.io/v1beta2
     kind: Cluster
     metadata:
-      namespace: mgmt
+      name: ignore
+      namespace: default
       labels:
-        sveltos.argus.rpcu.io/openstack-integration: {{ chihiro.openstack }}
-        sveltos.argus.rpcu.io/oidc-rbac: {{ chihiro.oidcRbac }}
-        sveltos.argus.rpcu.io/cilium: {{ chihiro.cilium }}
-        type: workload
+        managed-by: chihiro
+        team: {{ chihiro.team }}
     spec:
       clusterNetwork:
         pods:
@@ -108,85 +64,94 @@ cluster:
           cidrBlocks:
             - {{ chihiro.serviceCIDR }}
       topology:
-        classRef:
-          name: openstack-kamaji
+        class: my-infra-class
         controlPlane:
-          replicas: 0
-        variables:
-          - name: identityRef
-            value:
-              name: mgmt-cloud-config
-              cloudName: openstack
-          - name: externalNetworkId
-            value: 1cfd69da-057c-4748-a0d4-de5b0ca77db2
-          - name: imageName
-            value: {{ chihiro.imageName }}
-          - name: oidc
-            value:
-              enabled: true
-              issuerURL: https://rpcu-gabeck.eu1.zitadel.cloud
-              clientID: "377050089077613929"
-          - name: managedSubnetCIDR
-            value: {{ chihiro.managedSubnetCIDR }}
+          replicas: {{ chihiro.controlPlaneReplicas }}
+        workers:
+          machineDeployments:
+            - class: default-worker
+              name: worker
+              replicas: {{ chihiro.nodes }}
         version: "0.0.0"
+
+  # --- Parameters: dynamic form fields for the cluster creation UI ---
+  # Supported types: string, number, select, boolean
+  # Each parameter becomes a {{ chihiro.<key> }} placeholder in the template.
   parameters:
+    # String input
     podCIDR:
       label: "Pod CIDR"
       description: "CIDR block for pod networking"
       type: string
-      default: "10.207.0.0/16"
+      default: "10.244.0.0/16"
+
     serviceCIDR:
       label: "Service CIDR"
       description: "CIDR block for service networking"
       type: string
-      default: "10.107.0.0/16"
+      default: "10.96.0.0/12"
+
+    # Select with constrained options (image changes based on version)
     imageName:
       label: "Node Image"
-      description: "OpenStack image for cluster nodes"
+      description: "OS image for cluster nodes"
       type: select
+      editable: true
       options:
-        - value: "hephaestus-kaas-25.11-{{ chihiro.version }}"
-          label: "25.11"
+        - value: "ubuntu-24.04-k8s-{{ chihiro.version }}"
+          label: "Ubuntu 24.04"
           constrain:
-            version: ["v1.35.4"]
-        - value: "hephaestus-kaas-26.05-{{ chihiro.version }}"
-          label: "26.05"
+            version: ["v1.31.2", "v1.30.6"]
+        - value: "ubuntu-22.04-k8s-{{ chihiro.version }}"
+          label: "Ubuntu 22.04"
           constrain:
-            version: ["v1.36.1"]
-      default: "hephaestus-kaas-26.05-{{ chihiro.version }}"
+            version: ["v1.30.6"]
+      default: "ubuntu-24.04-k8s-{{ chihiro.version }}"
+
+    # Number input with min/max
+    controlPlaneReplicas:
+      label: "Control Plane Replicas"
+      description: "Number of control plane nodes (odd numbers recommended)"
+      type: number
+      default: "3"
+      min: 1
+      max: 9
       editable: true
-      path: "spec.topology.variables[2].value"
-    managedSubnetCIDR:
-      label: "Managed Subnet CIDR"
-      description: "CIDR block for the managed subnet"
-      type: string
-      default: "192.168.1.0/24"
-    cilium:
+      path: spec.topology.controlPlane.replicas
+
+    nodes:
+      label: "Worker Nodes"
+      description: "Number of worker nodes"
+      type: number
+      default: "2"
+      min: 0
+      max: 20
+
+    # Boolean toggle with custom true/false values
+    enableCilium:
       label: "Cilium CNI"
-      description: "Enable the Cilium addon via Sveltos"
+      description: "Use Cilium as the CNI instead of the default"
       type: boolean
       default: true
-      true_value: enabled
-      false_value: disabled
+      true_value: "cilium"
+      false_value: "default"
       editable: true
-      path: "metadata.labels.'sveltos.argus.rpcu.io/cilium'"
-    oidcRbac:
-      label: "OIDC RBAC"
-      description: "Enable OIDC RBAC addon via Sveltos"
-      type: boolean
-      default: true
-      true_value: enabled
-      false_value: disabled
+      path: "metadata.labels.'example.com/cni'"
+
+    # String input editable post-creation via injection path
+    serviceDomain:
+      label: "Service Domain"
+      description: "DNS domain for cluster services"
+      type: string
+      default: "cluster.local"
       editable: true
-      path: "metadata.labels.'sveltos.argus.rpcu.io/oidc-rbac'"
+      path: spec.clusterNetwork.serviceDomain
+
+    # Admin-only parameter (only visible to admin_groups)
+    team:
+      label: "Team"
+      description: "Owning team (used as label)"
+      type: string
+      default: "platform"
       visible_groups:
-        - kube-admin
-    openstack:
-      label: "Openstack Integration"
-      description: "Enable Service Type LB using Octavia and CSI using Cinder"
-      type: boolean
-      default: true
-      true_value: enabled
-      false_value: disabled
-      editable: true
-      path: "metadata.labels.'sveltos.argus.rpcu.io/openstack-integration'"
+        - platform-admins
