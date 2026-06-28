@@ -15,16 +15,18 @@ must come from environment variables only.
 
 ### Server
 
-| Key        | Env var             | Type   | Default     | Description                          |
-| ---------- | ------------------- | ------ | ----------- | ------------------------------------ |
-| `host`     | `CHIHIRO_HOST`      | string | `0.0.0.0`   | Address the HTTP server binds to.    |
-| `port`     | `CHIHIRO_PORT`      | int    | `8080`      | Port the HTTP server listens on.     |
-| `docs_url` | `CHIHIRO_DOCS_URL`  | string | —           | External docs link shown in the UI.  |
+| Key              | Env var                    | Type   | Default     | Description                                                  |
+| ---------------- | -------------------------- | ------ | ----------- | ------------------------------------------------------------ |
+| `host`           | `CHIHIRO_HOST`             | string | `0.0.0.0`   | Address the HTTP server binds to.                            |
+| `port`           | `CHIHIRO_PORT`             | int    | `8080`      | Port the HTTP server listens on.                             |
+| `docs_url`       | `CHIHIRO_DOCS_URL`         | string | —           | External docs link shown in the UI.                          |
+| `allowed_origins`| `CHIHIRO_ALLOWED_ORIGINS`  | string | —           | Comma-separated list of trusted origins for OAuth redirect host detection and WebSocket origin checks. Exact match only, no wildcards. |
 
 ```yaml
 host: "0.0.0.0"
 port: 8080
 docs_url: "https://docs.example.io/"
+allowed_origins: "https://dashboard.example.io,https://admin.example.io"
 ```
 
 ### OIDC
@@ -117,6 +119,8 @@ becomes a form input.
 | `editable`      | bool     | Expose a post-creation edit button. Requires `path`.              |
 | `path`          | string   | YAML path on the live `Cluster` to write edits to.                |
 | `visible_groups`| []string | Restrict who can see/edit. Empty = everyone. Admins always see.   |
+| `recompute_on`  | []string | List of fields whose change should re-resolve this parameter. Useful when a parameter depends on another but the dependency can't be inferred from `constrain` metadata. |
+| `implies`       | list     | Declares fields this parameter sets when edited. Each entry is `{field, source}` where `field` is the target field and `source` is a map of allowed values to the value to push. |
 
 ```yaml
 parameters:
@@ -180,11 +184,41 @@ driver valid only in certain regions:
     path: "spec.topology.variables[3].value"
 ```
 
+When `constrain` metadata is enough to express the dependency, Chihiro
+auto-detects it. For cases where the dependency cannot be inferred from the
+option constraints, use `recompute_on` to declare it explicitly:
+
+```yaml
+  customImage:
+    type: select
+    options: [img-a, img-b]
+    recompute_on: [version]
+    editable: true
+    path: "spec.topology.variables[4].value"
+```
+
+The `implies` field lets a parameter push values to other fields when edited.
+Each entry maps a target field to a set of allowed source values and the value
+to write:
+
+```yaml
+  region:
+    type: select
+    options: [eu, us]
+    implies:
+      - field: driver
+        source:
+          eu: "eu-driver"
+          us: "us-driver"
+    editable: true
+    path: "spec.topology.variables[0].value"
+```
+
 ### `cluster.injections`
 
 Built-in cluster fields written at a given YAML path after the template is
 parsed. Keys are well-known: `name`, `version`, `serviceDomain`, `groups`,
-`workerGroups`, `controlPlaneReplicas`, `nodes`.
+`workerGroups`, `controlPlaneReplicas`.
 
 | Field           | Type     | Description                                                       |
 | --------------- | -------- | --------------------------------------------------------------- |
